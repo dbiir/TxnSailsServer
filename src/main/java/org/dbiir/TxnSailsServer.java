@@ -5,8 +5,11 @@ import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.handler.codec.LineBasedFrameDecoder;
 import io.netty.handler.codec.string.StringDecoder;
+import io.netty.handler.codec.string.StringEncoder;
 import org.dbiir.worker.OfflineWorker;
 import org.dbiir.worker.OnlineWorker;
 
@@ -23,8 +26,11 @@ public class TxnSailsServer {
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override
                         public void initChannel(SocketChannel ch) throws Exception {
-                            ch.pipeline().addLast(new LineBasedFrameDecoder(1024));
+                            ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(1024, 0, 4, 0, 4));
+                            // Encoder
+                            ch.pipeline().addLast(new LengthFieldPrepender(4));
                             ch.pipeline().addLast(new StringDecoder());
+                            ch.pipeline().addLast(new StringEncoder());
                             ch.pipeline().addLast(new ServerHandler());
                         }
                     });
@@ -39,9 +45,13 @@ public class TxnSailsServer {
 
     private static class ServerHandler extends ChannelInboundHandlerAdapter {
         @Override
-        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        public void channelRead(ChannelHandlerContext ctx, Object msg) throws InterruptedException {
             String message = (String) msg;
-            String[] parts = message.split(" ");
+            System.out.println("Received: " + message);
+            String[] parts = message.split("#");
+            for (int i = 0; i < parts.length; i++) {
+                parts[i] = parts[i].trim();
+            }
             String functionName = parts[0].toLowerCase(); // function name is case-insensitive
             String[] args = new String[parts.length - 1];
             System.arraycopy(parts, 1, args, 0, parts.length - 1);
@@ -65,7 +75,7 @@ public class TxnSailsServer {
                         response = "FAILED";
                         break;
                     }
-                    response = "OK," + idx;
+                    response = "OK#" + idx; // response with the unique sql index in server-side
                     break;
                 case "register_end":
                     response = "OK";
@@ -75,10 +85,10 @@ public class TxnSailsServer {
                 default:
                     response = "Unknown function: " + functionName;
             }
-
+            System.out.println(response);
             ByteBuf resp = ctx.alloc().buffer(response.length());
             resp.writeBytes(response.getBytes(StandardCharsets.UTF_8));
-            ctx.writeAndFlush(resp);
+            ctx.writeAndFlush(resp).sync();
         }
 
         @Override

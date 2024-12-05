@@ -27,11 +27,13 @@ public class OfflineWorker {
      * args[2]: table name, lowercase
      * args[3]: sql
      * args[4]: sql idx of previous read, write to the record
+     * args[5]: unique sql index in client-side
      */
     public int register(String[] args) {
+        System.out.println("register: " + args[0] + " " + args[1] + " " + args[2] + " " + args[3] + "\tlength:" + args.length);
         if (args.length < 4)
             return -1;
-        if (args[1].equalsIgnoreCase("write") || args[1].equalsIgnoreCase("writes")) {
+        if (args[1].equalsIgnoreCase("1") || args[1].equalsIgnoreCase("write")) {
             if (args.length == 5)
                 return MetaWorker.getINSTANCE().registerTemplateSQL(args[0], 1, args[2], args[3], Integer.parseInt(args[4]));
             else
@@ -51,7 +53,7 @@ public class OfflineWorker {
     public void register_end(String[] args) {
         if (args.length < 1)
             return;
-        MetaWorker.getINSTANCE().analysisWorkload();
+//        MetaWorker.getINSTANCE().analysisWorkload();
         flush_analysis_results();
     }
 
