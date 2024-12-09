@@ -14,10 +14,6 @@ public class TemplateSQL {
     @Getter
     private String sql_rewrite;
     @Getter
-    private String templatename;
-    @Getter
-    private int idx;
-    @Getter
     private String relation;
     @Getter
     @Setter
@@ -29,93 +25,34 @@ public class TemplateSQL {
     @Getter
     private boolean needRewriteUnderRC;
 
-    public TemplateSQL(int op, String templatename, String workload, String relation, String sql, int idx) {
+    public TemplateSQL(int op,  String relation, String sql) {
         this.op = op;
         this.sql = sql;
         this.sql_rewrite = "";
         this.templatename = templatename;
         this.workload = workload;
         this.relation = relation;
+        // 在analyse的阶段已经被赋值
         needRewriteUnderSI = false;
         needRewriteUnderRC = false;
         skip = false;
     }
 
     public void parse() {
-        if (workload.toUpperCase().equals(WorkloadConstants.TPCC)) {
-            // TPCC Workload
-            if (templatename.toUpperCase().equals(WorkloadConstants.OrderStatus)) {
-                // OrderStatus
-                needRewriteUnderRC = true;
-                sql_rewrite = addVidToSelect(sql);
-            } else if (templatename.toUpperCase().equals(WorkloadConstants.Payment)) {
-                // Payment
-                needRewriteUnderRC = true;
-                if (idx == 1 || idx == 3){
-                    sql_rewrite = modifyReturningUpdateSQL(sql);
-                } else if (idx == 2) {
-                    sql_rewrite = addVidToSelect(sql);
-                }
-            } else if (template.toUpperCase().equals(WorkloadConstants.Delivery)) {
-                // Delivery
-                needRewriteUnderRC = true;
+        if (needRewriteUnderC == true) {
+            if (SQLTypeIdentifier(sql).equals("UPDATE")) {
                 sql_rewrite = modifyReturningUpdateSQL(sql);
-            } else if (template.toUpperCase().equals(WorkloadConstants.NewOrder)) {
-                // NewOrder
-                needRewriteUnderRC = true;
-                if (idx == 1 || idx == 3) {
-                    sql_rewrite = addVidToSelect(sql);
-                }
-            } else if (template.toUpperCase().equals(WorkloadConstants.StockLevel)) {
-                // StockLevel do nothing
+            } else if (SQLTypeIdentifier(sql).equals("SELECT")) {
+                sql_rewrite = addVidToSelect(sql);
             }
-        } else if (workload.toUpperCase().equals(WorkloadConstants.YCSB)) {
-            if (templatename.toUpperCase().equals(WorkloadConstants.ReadWriteRecord)) {
-                needRewriteUnderSI = true;
-                needRewriteUnderRC = true;
-                if (op == 0) {
-                    sql_rewrite = addVidToSelect(sql);
-                } else if (op == 1){
-                    sql_rewrite == modifyUpdateSQL(sql);
-                }
-            } else {
-                // for other templates, do nothing
+        }
+
+        if (needRewriteUnderSI == true) {
+            if (SQLTypeIdentifier(sql).equals("UPDATE")) {
+                sql_rewrite = modifyReturningUpdateSQL(sql);
+            } else if (SQLTypeIdentifier(sql).equals("SELECT")) {
+                sql_rewrite = addVidToSelect(sql);
             }
-        } else if (workload.toUpperCase().equals(WorkloadConstants.SMALLBANK)) {
-            needRewriteUnderSI = true;
-            needRewriteUnderRC = true;
-            if (templatename.toUpperCase().equals(WorkloadConstants.DepositChecking)) {
-                // DepositChecking
-                if (idx == 2) {
-                    sql_rewrite = modifyReturningUpdateSQL(sql);
-                }
-            } else if (templatename.toUpperCase().equals(WorkloadConstants.WriteCheck)) {
-                // WriteCheck
-                if (idx == 2 || idx == 3) {
-                    sql_rewrite = addVidToSelect(sql);
-                } else if (idx == 4) {
-                    sql_rewrite = modifyUpdateSQL(sql);
-                }
-            } else if (templatename.toUpperCase().equals(WorkloadConstants.TransactSavings)) {
-                // TransactSavings
-                if (idx == 2) {
-                    sql_rewrite = modifyReturningUpdateSQL(sql);
-                }
-            } else if (templatename.toUpperCase().equals(WorkloadConstants.Amalgamate)) {
-                // Amalgamate
-                if (idx >= 3) {
-                    sql_rewrite = modifyReturningUpdateSQL(sql);
-                }
-            } else if (templatename.toUpperCase().equals(WorkloadConstants.Balance)) {
-                // Balance
-                if (idx >= 2) {
-                    sql_rewrite = addVidToSelect(sql);
-                }
-            }
-        } else {
-            // 如果不匹配 TPCC, YCSB, SMALLBANK
-            // 返回错误信息或抛出异常
-            throw new IllegalArgumentException("Unsupported workload: " + TemplateName);
         }
     }
 
@@ -198,6 +135,28 @@ public class TemplateSQL {
             return modifiedSQL;
         } else {
             throw new IllegalArgumentException("Invalid UPDATE SQL statement: no SET clause found.");
+        }
+    }
+
+    // 识别SQL语句
+    public class SQLTypeIdentifier {
+        public static String identifySQLType(String sql) {
+            sql = sql.trim().toUpperCase();
+            if (sql.startsWith("SELECT")) {
+                return "SELECT";
+            } else if (sql.startsWith("UPDATE")) {
+                return "UPDATE";
+            } else {
+                return "Unknown";
+            }
+        }
+    
+        public static void main(String[] args) {
+            String sql1 = "SELECT * FROM users WHERE id = 1";
+            String sql2 = "UPDATE users SET name = 'Alice' WHERE id = 1";
+            
+            System.out.println(identifySQLType(sql1));  // 输出: SELECT
+            System.out.println(identifySQLType(sql2));  // 输出: UPDATE
         }
     }
 }

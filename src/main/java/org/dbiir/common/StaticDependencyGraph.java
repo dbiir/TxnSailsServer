@@ -17,12 +17,14 @@ public class StaticDependencyGraph {
     }
 
     public void addTemplate(TransactionTemplate template) {
+        if (adjacencyList.containsKey(template))
+            return;
         adjacencyList.putIfAbsent(template, new ArrayList<>());
+        templateList.add(template);
     }
 
     public void addDependency(TransactionTemplate from, TransactionTemplate to, DependencyType type) {
         StaticDependencyGraphEdge edge = new StaticDependencyGraphEdge(from, to, type);
-        // TODO: set edgeName
         adjacencyList.get(from).add(edge);
     }
 

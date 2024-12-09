@@ -54,13 +54,13 @@ public class MetaWorker {
         // analysis SI
         List<List<StaticDependencyGraphEdge>> cyclesWithTwoConsecutiveReadWrite = findCyclesWithTwoConsecutiveReadWrite(allCycles);
 
-        // 输出结果
+        // output the result
         System.out.println("RC:");
         for (List<StaticDependencyGraphEdge> cycle : cyclesWithReadWrite) {
             System.out.println(cycle);
         }
 
-        System.out.println("\nSI:");
+        System.out.println("SI:");
         for (List<StaticDependencyGraphEdge> cycle : cyclesWithTwoConsecutiveReadWrite) {
             System.out.println(cycle);
         }
