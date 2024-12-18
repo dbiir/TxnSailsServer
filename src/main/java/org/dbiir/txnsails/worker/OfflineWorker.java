@@ -1,4 +1,4 @@
-package org.dbiir.worker;
+package org.dbiir.txnsails.worker;
 
 import lombok.Getter;
 
@@ -53,7 +53,7 @@ public class OfflineWorker {
     public void register_end(String[] args) {
         if (args.length < 1)
             return;
-//        MetaWorker.getINSTANCE().analysisWorkload();
+        MetaWorker.getINSTANCE().analysisWorkload();
         flush_analysis_results();
     }
 
