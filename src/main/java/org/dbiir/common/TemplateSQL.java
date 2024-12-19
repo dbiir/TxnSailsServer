@@ -1,9 +1,24 @@
 package org.dbiir.common;
 
+import java.io.StringReader;
+import java.lang.reflect.Array;
+import java.util.Arrays;
+import java.util.List;
+
+import net.sf.jsqlparser.parser.*;
+import net.sf.jsqlparser.statement.*;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.statement.select.Select;
+import net.sf.jsqlparser.statement.select.SelectExpressionItem;
+import net.sf.jsqlparser.statement.select.SelectItem;
+import net.sf.jsqlparser.statement.update.*;
+import net.sf.jsqlparser.expression.*;
+import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
+import net.sf.jsqlparser.schema.*;
+import java.util.stream.Collectors;
+
 import lombok.Getter;
 import lombok.Setter;
-import WorkloadConstants;
-
 
 @Getter
 public class TemplateSQL {
@@ -24,34 +39,37 @@ public class TemplateSQL {
     @Setter
     @Getter
     private boolean needRewriteUnderRC;
+    @Setter
+    @Getter
+    private List<String> columnList;
 
-    public TemplateSQL(int op,  String relation, String sql) {
+    public TemplateSQL(int op, String relation, String sql) {
         this.op = op;
         this.sql = sql;
         this.sql_rewrite = "";
-        this.templatename = templatename;
-        this.workload = workload;
         this.relation = relation;
-        // 在analyse的阶段已经被赋值
+        this.columnList = null;
+        // These are assigned during the analysis phase
         needRewriteUnderSI = false;
         needRewriteUnderRC = false;
         skip = false;
     }
 
     public void parse() {
-        if (needRewriteUnderC == true) {
-            if (SQLTypeIdentifier(sql).equals("UPDATE")) {
-                sql_rewrite = modifyReturningUpdateSQL(sql);
-            } else if (SQLTypeIdentifier(sql).equals("SELECT")) {
-                sql_rewrite = addVidToSelect(sql);
+        // Check if SQL needs to be rewritten under certain conditions
+        if (needRewriteUnderRC) {
+            if (identifySQLType(sql).equals("UPDATE")) {
+                sql_rewrite = modifyUpdateQuery(sql, columnList);
+            } else if (identifySQLType(sql).equals("SELECT")) {
+                sql_rewrite = modifySelectQuery(sql, columnList);
             }
         }
 
-        if (needRewriteUnderSI == true) {
-            if (SQLTypeIdentifier(sql).equals("UPDATE")) {
-                sql_rewrite = modifyReturningUpdateSQL(sql);
-            } else if (SQLTypeIdentifier(sql).equals("SELECT")) {
-                sql_rewrite = addVidToSelect(sql);
+        if (needRewriteUnderSI) {
+            if (identifySQLType(sql).equals("UPDATE")) {
+                sql_rewrite = modifyUpdateQuery(sql, columnList);
+            } else if (identifySQLType(sql).equals("SELECT")) {
+                sql_rewrite = modifySelectQuery(sql, columnList);
             }
         }
     }
@@ -60,103 +78,92 @@ public class TemplateSQL {
         sql_rewrite = sql;
     }
 
-    // 方法：为 SELECT 语句添加字段 vid，确保位于最后
-    public static String addVidToSelect(String sql) {
-        // 检查 SQL 是否包含 "SELECT" 关键字
-        if (sql.toUpperCase().startsWith("SELECT") && sql.contains("FROM")) {
-            // 找到 "SELECT" 和 "FROM" 之间的部分，即字段列表
-            int selectIndex = sql.indexOf("SELECT") + "SELECT".length();
-            int fromIndex = sql.indexOf("FROM");
+    // Method: Add the field "vid" to the SELECT statement and ensure it is added at the end
+    public static String modifySelectQuery(String sql, List<String> columnList) {
+        try {
+            // Parse the original SELECT statement
+            CCJSqlParserManager parserManager = new CCJSqlParserManager();
+            Select selectStatement = (Select) parserManager.parse(new StringReader(sql));
 
-            // 获取 SELECT 和 FROM 之间的字段部分
-            String selectFields = sql.substring(selectIndex, fromIndex).trim();
+            // Get the SELECT body, which is the part containing the fields
+            PlainSelect plainSelect = (PlainSelect) selectStatement.getSelectBody();
 
-            // 如果字段部分已经有内容，添加 ", vid"，否则直接添加 "vid"
-            if (!selectFields.isEmpty()) {
-                selectFields += ", vid";
-            } else {
-                selectFields = "vid";
-            }
+            // Get the list of SELECT items (fields)
+            List<SelectItem> selectItems = plainSelect.getSelectItems();
 
-            // 拼接修改后的 SQL 语句
-            return "SELECT " + selectFields + sql.substring(fromIndex);
-        } else {
-            throw new IllegalArgumentException("Invalid SELECT SQL statement");
+            // Create a new column "vid"
+            Column vidColumn = new Column("vid");
+
+            // Create a new SELECT expression item (field)
+            SelectExpressionItem vidSelectItem = new SelectExpressionItem(vidColumn);
+
+            // Add the "vid" field to the SELECT clause
+            selectItems.add(vidSelectItem);
+            
+            columnList= Arrays.stream(selectItems.toArray())
+                            .filter(obj -> obj instanceof String)  // 过滤掉非 String 类型的元素
+                            .map(obj -> (String) obj)  // 转换为 String
+                            .collect(Collectors.toList());
+            // Return the modified SQL statement
+            return selectStatement.toString();
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
         }
     }
 
-    // 方法：修改 SQL 语句，添加 vid 字段并返回
-    public static String modifyUpdateSQL(String sql) {
-        // 检查 SQL 是否包含 "SET" 关键字
-        if (sql.toUpperCase().contains("SET")) {
-            // 找到 "SET" 和 "WHERE" 之间的部分，即字段设置部分
-            int setIndex = sql.indexOf("SET") + "SET".length();
-            int whereIndex = sql.indexOf("WHERE");
+    // Method: Modify the SQL statement to add the "vid" field and return it
+    public static String modifyUpdateQuery(String sql, List<String> columnList) {
+        try {
+            // Parse the SQL statement
+            CCJSqlParserManager parserManager = new CCJSqlParserManager();
+            Update updateStatement = (Update) parserManager.parse(new StringReader(sql));
 
-            // 获取 "SET" 和 "WHERE" 之间的字段部分
-            String setClause = sql.substring(setIndex, whereIndex).trim();
+            // Create the expression "vid = vid + 1"
+            Column vidColumn = new Column("vid");
+            LongValue oneValue = new LongValue(1); // Represents the constant 1
+            Addition addExpression = new Addition();  // Addition represents the "vid + 1" operation
+            addExpression.setLeftExpression(vidColumn);  // Left side is the "vid" column
+            addExpression.setRightExpression(oneValue); // Right side is the constant value 1
 
-            // 确保字段部分以 ", vid = vid + 1" 结尾
-            if (!setClause.isEmpty()) {
-                setClause += ", vid = vid + 1";
-            } else {
-                setClause = "vid = vid + 1";
-            }
+            // Add the SetExpression to the UPDATE statement
+            updateStatement.getExpressions().add(addExpression);  // Add "vid = vid + 1" to the SET clause
 
-            // 拼接修改后的 SQL 语句
-            String modifiedSQL = sql.substring(0, setIndex) + " " + setClause + sql.substring(whereIndex);
+            // Manually add the RETURNING clause, since JSQLParser does not support it directly
+            String returningClause = " RETURNING vid";
+            columnList.add("vid");
+            
+            // Return the modified SQL statement
+            return updateStatement.toString() + returningClause;
 
-            return modifiedSQL;
-        } else {
-            throw new IllegalArgumentException("Invalid UPDATE SQL statement: no SET clause found.");
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
         }
     }
 
-    public static String modifyReturningUpdateSQL(String sql) {
-        // 检查 SQL 是否包含 "SET" 关键字
-        if (sql.toUpperCase().contains("SET")) {
-            // 找到 "SET" 和 "WHERE" 之间的部分，即字段设置部分
-            int setIndex = sql.indexOf("SET") + "SET".length();
-            int whereIndex = sql.indexOf("WHERE");
-
-            // 获取 "SET" 和 "WHERE" 之间的字段部分
-            String setClause = sql.substring(setIndex, whereIndex).trim();
-
-            // 确保字段部分以 ", vid = vid + 1" 结尾
-            if (!setClause.isEmpty()) {
-                setClause += ", vid = vid + 1";
-            } else {
-                setClause = "vid = vid + 1";
-            }
-
-            // 拼接修改后的 SQL 语句
-            String modifiedSQL = sql.substring(0, setIndex) + " " + setClause + sql.substring(whereIndex)+ " RETURNING vid;";
-
-            return modifiedSQL;
-        } else {
-            throw new IllegalArgumentException("Invalid UPDATE SQL statement: no SET clause found.");
-        }
-    }
-
-    // 识别SQL语句
-    public class SQLTypeIdentifier {
-        public static String identifySQLType(String sql) {
-            sql = sql.trim().toUpperCase();
-            if (sql.startsWith("SELECT")) {
+    // Method: Identify the type of SQL statement (SELECT, UPDATE, etc.)
+    public static String identifySQLType(String sql) {
+        try {
+            // Create the SQL parser
+            CCJSqlParserManager parserManager = new CCJSqlParserManager();
+            
+            // Parse the SQL statement
+            Statement statement = parserManager.parse(new StringReader(sql));
+            
+            // Check the type of SQL statement
+            if (statement instanceof Select) {
                 return "SELECT";
-            } else if (sql.startsWith("UPDATE")) {
+            } else if (statement instanceof Update) {
                 return "UPDATE";
             } else {
-                return "Unknown";
+                return "Unknown SQL type";
             }
-        }
-    
-        public static void main(String[] args) {
-            String sql1 = "SELECT * FROM users WHERE id = 1";
-            String sql2 = "UPDATE users SET name = 'Alice' WHERE id = 1";
             
-            System.out.println(identifySQLType(sql1));  // 输出: SELECT
-            System.out.println(identifySQLType(sql2));  // 输出: UPDATE
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "Error in parsing SQL";
         }
     }
 }
