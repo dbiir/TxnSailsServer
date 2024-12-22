@@ -1,9 +1,7 @@
-package org.dbiir.common;
+package org.dbiir.txnsails.common;
 
 import lombok.Getter;
 import lombok.Setter;
-
-import java.util.List;
 
 @Getter
 public class StaticDependencyGraphEdge {
@@ -21,6 +19,10 @@ public class StaticDependencyGraphEdge {
     private String edgeName = "";
     @Setter
     private boolean hasKeptOrder = false;
+    @Setter
+    private int idxInFrom;
+    @Setter
+    private int idxInTo;
 
     public StaticDependencyGraphEdge(TransactionTemplate from, TransactionTemplate to, DependencyType type) {
         this.from = from;

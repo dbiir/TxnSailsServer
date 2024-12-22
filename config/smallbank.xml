@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<parameters>
+
+    <!-- Connection details -->
+    <type>POSTGRES</type>
+    <driver>org.postgresql.Driver</driver>
+    <url>jdbc:postgresql://localhost:5432/osprey?sslmode=disable&amp;ApplicationName=smallbank&amp;reWriteBatchedInserts=true</url>
+    <username>postgres</username>
+    <password>Ss123!@#</password>
+    <reconnectOnConnectionFailure>true</reconnectOnConnectionFailure>
+    <isolation>TRANSACTION_SERIALIZABLE</isolation>
+    <batchsize>128</batchsize>
+    <!--
+    SERIALIZABLE,
+    SI_ELT, RC_ELT,
+    SI_FOR_UPDATE, RC_FOR_UPDATE,
+    SI_TAILOR, RC_TAILOR, RC_TAILOR_LOCK, DYNAMIC
+    -->
+    <concurrencyControlType>SERIALIZABLE</concurrencyControlType>
+    <!--  ycsb, smallbank, tpcc  -->
+    <benchmark>smallbank</benchmark>
+</parameters>
