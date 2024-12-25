@@ -17,9 +17,6 @@
 
 package org.dbiir.txnsails.execution.utils;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -29,8 +26,6 @@ import java.util.regex.Pattern;
  * @author pavlo
  */
 public final class SQLStmt {
-  private static final Logger LOG = LoggerFactory.getLogger(SQLStmt.class);
-
   private static final Pattern SUBSTITUTION_PATTERN = Pattern.compile("\\?\\?");
 
   private String orig_sql;
@@ -71,9 +66,6 @@ public final class SQLStmt {
       sql = m.replaceFirst(replace);
     }
     this.sql = sql;
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Initialized SQL:\n{}", this.sql);
-    }
   }
 
   public final String getSQL() {

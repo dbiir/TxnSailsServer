@@ -37,7 +37,7 @@ public abstract class SmallBankConstants {
   public static final String TABLENAME_SAVINGS = "savings";
   public static final String TABLENAME_CHECKING = "checking";
   public static final String TABLENAME_CONFLICT = "conflict";
-  public static final HashMap<String , Integer> TABLENAME_TO_INDEX = new HashMap<>(4);
+  public static final HashMap<String, Integer> TABLENAME_TO_INDEX = new HashMap<>(4);
 
   static {
     TABLENAME_TO_INDEX.put(TABLENAME_ACCOUNTS, 0);

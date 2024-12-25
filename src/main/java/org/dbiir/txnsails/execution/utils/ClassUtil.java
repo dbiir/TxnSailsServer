@@ -17,22 +17,18 @@
 
 package org.dbiir.txnsails.execution.utils;
 
-import org.apache.commons.collections4.CollectionUtils;
-import org.apache.commons.lang3.ClassUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.*;
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.ClassUtils;
 
 /**
  * @author pavlo
  */
 public abstract class ClassUtil {
-  private static final Logger LOG = LoggerFactory.getLogger(ClassUtil.class);
 
   private static final Map<Class<?>, List<Class<?>>> CACHE_getSuperClasses = new HashMap<>();
   private static final Map<Class<?>, Set<Class<?>>> CACHE_getInterfaceClasses = new HashMap<>();
@@ -142,35 +138,20 @@ public abstract class ClassUtil {
       error = ex;
     }
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("TARGET CLASS:  {}", target_class);
-      LOG.debug("TARGET PARAMS: {}", Arrays.toString(params));
-    }
-
     @SuppressWarnings("rawtypes")
     List<Class<?>>[] paramSuper = (List<Class<?>>[]) new List[params.length];
     for (int i = 0; i < params.length; i++) {
       paramSuper[i] = ClassUtil.getSuperClasses(params[i]);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("  SUPER[{}] => {}", params[i].getSimpleName(), paramSuper[i]);
-      }
     }
 
     for (Constructor<?> c : target_class.getConstructors()) {
       Class<?>[] cTypes = c.getParameterTypes();
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("CANDIDATE: {}", c);
-        LOG.debug("CANDIDATE PARAMS: {}", Arrays.toString(cTypes));
-      }
       if (params.length != cTypes.length) {
         continue;
       }
 
       for (int i = 0; i < params.length; i++) {
         List<Class<?>> cSuper = ClassUtil.getSuperClasses(cTypes[i]);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug("  SUPER[{}] => {}", cTypes[i].getSimpleName(), cSuper);
-        }
         if (!CollectionUtils.intersection(paramSuper[i], cSuper).isEmpty()) {
           return ((Constructor<T>) c);
         }

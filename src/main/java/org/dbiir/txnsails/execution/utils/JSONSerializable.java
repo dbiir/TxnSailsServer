@@ -17,13 +17,12 @@
 
 package org.dbiir.txnsails.execution.utils;
 
+import java.io.IOException;
+import java.io.Serializable;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.json.JSONString;
 import org.json.JSONStringer;
-
-import java.io.IOException;
-import java.io.Serializable;
 
 public interface JSONSerializable extends JSONString, Serializable {
   void save(String output_path) throws IOException;

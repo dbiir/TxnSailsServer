@@ -17,85 +17,55 @@
 
 package org.dbiir.txnsails.execution;
 
+import java.sql.Connection;
 import lombok.Getter;
 import lombok.Setter;
 import org.apache.commons.configuration2.XMLConfiguration;
-import org.dbiir.txnsails.common.DatabaseType;
 import org.dbiir.txnsails.common.CCType;
-
-import java.sql.Connection;
+import org.dbiir.txnsails.common.DatabaseType;
 
 public class WorkloadConfiguration {
 
-  @Setter
+  @Setter @Getter private DatabaseType databaseType;
+  @Setter @Getter private String benchmarkName;
+  @Setter @Getter private String url;
+  @Setter @Getter private String username;
+  @Setter @Getter private String password;
+  @Getter @Setter private String driverClass;
+  @Getter @Setter private int batchSize;
+  @Getter @Setter private int maxRetries;
+  @Getter @Setter private int randomSeed = -1;
+  @Setter @Getter private double scaleFactor = 1.0;
+  @Getter @Setter private double selectivity = -1.0;
+  @Setter @Getter private int terminals;
+  @Setter @Getter private XMLConfiguration xmlConfig = null;
+
   @Getter
-  private DatabaseType databaseType;
-  @Setter
-  @Getter
-  private String benchmarkName;
-  @Setter
-  @Getter
-  private String url;
-  @Setter
-  @Getter
-  private String username;
-  @Setter
-  @Getter
-  private String password;
-  @Getter
-  @Setter
-  private String driverClass;
-  @Getter
-  @Setter
-  private int batchSize;
-  @Getter
-  @Setter
-  private int maxRetries;
-  @Getter
-  @Setter
-  private int randomSeed = -1;
-  @Setter
-  @Getter
-  private double scaleFactor = 1.0;
-  @Getter
-  @Setter
-  private double selectivity = -1.0;
-  @Setter
-  @Getter
-  private int terminals;
-  @Setter
-  @Getter
-  private XMLConfiguration xmlConfig = null;
-  @Getter
-  private int isolationMode = Connection.TRANSACTION_SERIALIZABLE; // always providing serializable execution
-  @Getter
-  private CCType concurrencyControlType = CCType.SER;
+  private int isolationMode =
+      Connection.TRANSACTION_SERIALIZABLE; // always providing serializable execution
+
+  @Getter private CCType concurrencyControlType = CCType.SER;
+
   /**
    * If true, establish a new connection for each transaction, otherwise use one persistent
-   * connection per client session. This is useful to measure the connection overhead.
-   * -- SETTER --
-   *  Used by the configuration loader at startup. Changing it any other time is probably
-   *  dangeroues. @see newConnectionPerTxn member docs for behavior.
+   * connection per client session. This is useful to measure the connection overhead. -- SETTER --
+   * Used by the configuration loader at startup. Changing it any other time is probably
+   * dangeroues. @see newConnectionPerTxn member docs for behavior.
    *
    * @param newConnectionPerTxn
-
    */
-  @Setter
-  private boolean newConnectionPerTxn = false;
+  @Setter private boolean newConnectionPerTxn = false;
 
   /**
    * If true, attempt to catch connection closed exceptions and reconnect. This allows the benchmark
    * to recover like a typical application would in the case of a replicated cluster
-   * primary-secondary failover.
-   * -- SETTER --
-   *  Used by the configuration loader at startup. Changing it any other time is probably
-   *  dangeroues. @see reconnectOnConnectionFailure member docs for behavior.
+   * primary-secondary failover. -- SETTER -- Used by the configuration loader at startup. Changing
+   * it any other time is probably dangeroues. @see reconnectOnConnectionFailure member docs for
+   * behavior.
    *
    * @param reconnectOnConnectionFailure
-
    */
-  @Setter
-  private boolean reconnectOnConnectionFailure = false;
+  @Setter private boolean reconnectOnConnectionFailure = false;
 
   public void setConcurrencyControlType(String type) {
     switch (type) {

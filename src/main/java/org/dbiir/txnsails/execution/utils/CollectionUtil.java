@@ -17,9 +17,8 @@
 
 package org.dbiir.txnsails.execution.utils;
 
-import org.apache.commons.collections4.set.ListOrderedSet;
-
 import java.util.*;
+import org.apache.commons.collections4.set.ListOrderedSet;
 
 /**
  * @author pavlo

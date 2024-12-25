@@ -38,7 +38,7 @@ public abstract class TPCCConstants {
   /** An invalid item id used to rollback a new order transaction. */
   public static final int INVALID_ITEM_ID = -12345;
 
-  public static final HashMap<String , Integer> TABLENAME_TO_INDEX = new HashMap<>(12);
+  public static final HashMap<String, Integer> TABLENAME_TO_INDEX = new HashMap<>(12);
 
   static {
     TABLENAME_TO_INDEX.put(TABLENAME_WAREHOUSE, 0);
