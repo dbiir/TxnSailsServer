@@ -74,5 +74,21 @@
         </dependency>
         
     </dependencies>
-
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-jar-plugin</artifactId>
+            <version>3.4.2</version> <!-- 请根据需要选择最新版本 -->
+            <configuration>
+                <archive>
+                    <manifest>
+                        <addClasspath>true</addClasspath>
+                        <mainClass>org.dbiir.txnsails.TxnSailsServer</mainClass> <!-- 替换为您的主类全名 -->
+                    </manifest>
+                </archive>
+            </configuration>
+        </plugin>
+    </plugins>
+</build>
 </project>

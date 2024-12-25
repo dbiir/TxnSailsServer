@@ -1,6 +1,8 @@
 package org.dbiir.txnsails.execution.sample;
 
 import lombok.Getter;
+import lombok.Setter;
+
 import org.dbiir.txnsails.execution.utils.RWRecord;
 
 import java.util.ArrayList;
@@ -9,7 +11,9 @@ import java.util.List;
 @Getter
 public class TransactionMeta {
     private int id;
+    @Getter
     private final List<RWRecord> rset;
+    @Getter
     private final List<RWRecord> wset;
     private int processing;
 

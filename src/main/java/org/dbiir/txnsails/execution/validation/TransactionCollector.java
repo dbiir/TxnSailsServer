@@ -74,8 +74,8 @@ public class TransactionCollector {
     }
 
     private int rrDependency(int idx1, int idx2) {
-        for (RWRecord r: transactionMetas[idx2].rset()) {
-            for (RWRecord r2: transactionMetas[idx1].rset()) {
+        for (RWRecord r: transactionMetas[idx2].getRset()) {
+            for (RWRecord r2: transactionMetas[idx1].getRset()) {
                 if (r.table_idx() == r2.table_idx() && r.key_id() == r2.key_id())
                     return r.table_idx();
             }
@@ -84,14 +84,14 @@ public class TransactionCollector {
     }
 
     private int rwDependency(int idx1, int idx2) {
-        for (RWRecord w: transactionMetas[idx2].wset()) {
-            for (RWRecord r: transactionMetas[idx1].rset()) {
+        for (RWRecord w: transactionMetas[idx2].getWset()) {
+            for (RWRecord r: transactionMetas[idx1].getRset()) {
                 if (w.table_idx() == r.table_idx() && w.key_id() == r.key_id())
                     return w.table_idx();
             }
         }
-        for (RWRecord w: transactionMetas[idx1].wset()) {
-            for (RWRecord r: transactionMetas[idx2].rset()) {
+        for (RWRecord w: transactionMetas[idx1].getWset()) {
+            for (RWRecord r: transactionMetas[idx2].getRset()) {
                 if (w.table_idx() == r.table_idx() && w.key_id() == r.key_id())
                     return w.table_idx();
             }
@@ -100,8 +100,8 @@ public class TransactionCollector {
     }
 
     private int wwDependency(int idx1, int idx2) {
-        for (RWRecord w1: transactionMetas[idx2].wset()) {
-            for (RWRecord w2: transactionMetas[idx1].wset()) {
+        for (RWRecord w1: transactionMetas[idx2].getWset()) {
+            for (RWRecord w2: transactionMetas[idx1].getWset()) {
                 if (w1.table_idx() == w2.table_idx() && w1.key_id() == w2.key_id())
                     return w1.table_idx();
             }
