@@ -16,7 +16,9 @@ import net.sf.jsqlparser.schema.*;
 
 import java.io.StringReader;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Getter
 public class TemplateSQL implements Cloneable {
@@ -33,12 +35,16 @@ public class TemplateSQL implements Cloneable {
     @Setter
     private List<Integer> uniqueKeyIndexList; // calculate
     private int uniqueKeyNumber;
+    @Setter
+    @Getter
+    private List<String> columnList;
 
     public TemplateSQL(int op, String relation, String sql) {
         this.op = op;
         this.sql = sql;
         this.sql_rewrite = "";
         this.relation = relation;
+        this.columnList = null;
         this.needRewriteUnderSI = false;
         this.needRewriteUnderRC = false;
         this.skip = false;
@@ -66,9 +72,9 @@ public class TemplateSQL implements Cloneable {
     public String getSQL() {
         if (needRewriteUnderRC || needRewriteUnderSI) {
             if (identifySQLType(sql) == 1) {
-                sql_rewrite = modifyUpdateQuery(sql);
+                sql_rewrite = modifyUpdateQuery(sql, columnList);
             } else if (identifySQLType(sql) == 0) {
-                sql_rewrite = modifySelectQuery(sql);
+                sql_rewrite = modifySelectQuery(sql, columnList);
             } else {
                 sql_rewrite = "";
             }
@@ -79,9 +85,9 @@ public class TemplateSQL implements Cloneable {
     private String getSQLUnderRC() {
         if (needRewriteUnderRC) {
             if (identifySQLType(sql) == 1) {
-                sql_rewrite = modifyUpdateQuery(sql);
+                sql_rewrite = modifyUpdateQuery(sql, columnList);
             } else if (identifySQLType(sql) == 0) {
-                sql_rewrite = modifySelectQuery(sql);
+                sql_rewrite = modifySelectQuery(sql, columnList);
             }
             return sql_rewrite;
         } else {
@@ -92,9 +98,9 @@ public class TemplateSQL implements Cloneable {
     private String getSQLUnderSI() {
         if (needRewriteUnderSI) {
             if (identifySQLType(sql) == 1) {
-                sql_rewrite = modifyUpdateQuery(sql);
+                sql_rewrite = modifyUpdateQuery(sql, columnList);
             } else if (identifySQLType(sql) == 0) {
-                sql_rewrite = modifySelectQuery(sql);
+                sql_rewrite = modifySelectQuery(sql, columnList);
             }
             return sql_rewrite;
         } else {
@@ -103,7 +109,7 @@ public class TemplateSQL implements Cloneable {
     }
 
     // Method: Add the field "vid" to the SELECT statement and ensure it is added at the end
-    public static String modifySelectQuery(String sql) {
+    public static String modifySelectQuery(String sql, List<String> columnList) {
         try {
             // Parse the original SELECT statement
             CCJSqlParserManager parserManager = new CCJSqlParserManager();
@@ -123,7 +129,10 @@ public class TemplateSQL implements Cloneable {
 
             // Add the "vid" field to the SELECT clause
             selectItems.add(vidSelectItem);
-
+            columnList= Arrays.stream(selectItems.toArray())
+                            .filter(obj -> obj instanceof String)
+                            .map(obj -> (String) obj)
+                            .collect(Collectors.toList());
             // Return the modified SQL statement
             return selectStatement.toString();
 
@@ -134,7 +143,7 @@ public class TemplateSQL implements Cloneable {
     }
 
     // Method: Modify the SQL statement to add the "vid" field and return it
-    public static String modifyUpdateQuery(String sql) {
+    public static String modifyUpdateQuery(String sql, List<String> columnList) {
         try {
             // Parse the SQL statement
             CCJSqlParserManager parserManager = new CCJSqlParserManager();
@@ -152,6 +161,7 @@ public class TemplateSQL implements Cloneable {
 
             // Manually add the RETURNING clause, since JSQLParser does not support it directly
             String returningClause = " RETURNING vid";
+            columnList.add("vid");
 
             // Return the modified SQL statement
             return updateStatement.toString() + returningClause;
