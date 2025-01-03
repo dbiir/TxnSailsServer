@@ -1,10 +1,14 @@
 package org.dbiir.txnsails.execution.validation;
 
-import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
+import org.dbiir.txnsails.common.ConditionInfo;
 import org.dbiir.txnsails.common.TemplateSQL;
+import org.dbiir.txnsails.common.constants.SmallBankConstants;
+import org.dbiir.txnsails.common.constants.TPCCConstants;
+import org.dbiir.txnsails.common.constants.YCSBConstants;
 
 @Getter
 @Setter
@@ -19,28 +23,36 @@ public class ValidationMeta {
    */
   private int oldVersions;
   // params for placeholder
-  private final List<Integer> uniqueKeys = new ArrayList<>(4);
   private int uniqueKeyNumber;
   private int idForValidation; // identification for validation (mod INT_MAX for hash value)
+  // key -> int
+  private HashMap<String, Integer> uniqueKeys = new HashMap<>(4);
+  private boolean isLocked = false;
 
-  public void addUniqueKey(int key) {
-    if (uniqueKeyNumber >= uniqueKeys.size()) {
-      uniqueKeys.add(key);
-    } else {
-      uniqueKeys.set(uniqueKeyNumber, key);
-      uniqueKeyNumber++;
+  public void addRuntimeArgs(List<String> args) {
+    List<ConditionInfo> whereConditionInfos = templateSQL.getWherePlaceholders();
+    if (args.size() < whereConditionInfos.size()) {
+      idForValidation = -1;
+      return;
     }
-
-    // calculate the identification for navigating the validation entry
-    if (uniqueKeyNumber == templateSQL.getUniqueKeyNumber()) {
-      calculateId();
+    for (ConditionInfo conditionInfo : whereConditionInfos) {
+      int v = Integer.parseInt(args.get(conditionInfo.getPlaceholderIndex()));
+      uniqueKeys.put(conditionInfo.getUpperCaseColumnName(), v);
     }
-  }
-
-  // calculate the identification for navigating the validation entry
-  private void calculateId() {
-    for (int i = 0; i < uniqueKeyNumber; i++) {
-      idForValidation = (uniqueKeys.get(i) + SEED * idForValidation) % Integer.MAX_VALUE;
+    // calculate the id for validation
+    switch (ValidationMetaTable.getInstance().getWorkload()) {
+      case "smallbank":
+        idForValidation =
+            SmallBankConstants.calculateUniqueId(uniqueKeys, templateSQL.getRelation());
+        break;
+      case "tpcc":
+        idForValidation = TPCCConstants.calculateUniqueId(uniqueKeys, templateSQL.getRelation());
+        break;
+      case "ycsb":
+        idForValidation = YCSBConstants.calculateUniqueId(uniqueKeys, templateSQL.getRelation());
+        break;
+      case "unknown benchmark":
+        break;
     }
   }
 
@@ -48,5 +60,11 @@ public class ValidationMeta {
     oldVersions = -1;
     uniqueKeyNumber = 0;
     idForValidation = -1;
+    isLocked = false;
+  }
+
+  public void deepCopy(ValidationMeta other) {
+    this.templateSQL = other.getTemplateSQL();
+    this.idForValidation = other.getIdForValidation();
   }
 }

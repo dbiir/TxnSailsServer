@@ -114,10 +114,6 @@ public class MetaWorker {
     System.out.println("========== find cycles end ==========");
   }
 
-  public int fetchTransactionId() {
-    return globalTransactionGenerator.getAndAdd(1);
-  }
-
   private Set<StaticDependencyCycle> findCyclesWithReadWrite(Set<StaticDependencyCycle> allCycles) {
     Set<StaticDependencyCycle> result = new HashSet<>();
 

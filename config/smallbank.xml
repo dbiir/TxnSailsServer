@@ -16,7 +16,7 @@
     SI_FOR_UPDATE, RC_FOR_UPDATE,
     SI_TAILOR, RC_TAILOR, RC_TAILOR_LOCK, DYNAMIC
     -->
-    <concurrencyControlType>SERIALIZABLE</concurrencyControlType>
+    <concurrencyControlType>DYNAMIC</concurrencyControlType>
     <!--  ycsb, smallbank, tpcc  -->
     <benchmark>smallbank</benchmark>
 </parameters>

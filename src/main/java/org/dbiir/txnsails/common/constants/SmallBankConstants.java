@@ -45,6 +45,14 @@ public abstract class SmallBankConstants {
     TABLENAME_TO_INDEX.put(TABLENAME_CHECKING, 2);
   }
 
+  public static final HashMap<String, Integer> TABLENAME_TO_HASH_SIZE = new HashMap<>(4);
+
+  static {
+    TABLENAME_TO_HASH_SIZE.put(TABLENAME_ACCOUNTS, 0);
+    TABLENAME_TO_HASH_SIZE.put(TABLENAME_SAVINGS, 4000000);
+    TABLENAME_TO_HASH_SIZE.put(TABLENAME_CHECKING, 4000000);
+  }
+
   // ----------------------------------------------------------------
   // ACCOUNT INFORMATION
   // ----------------------------------------------------------------
@@ -73,4 +81,53 @@ public abstract class SmallBankConstants {
   public static final double PARAM_DEPOSIT_CHECKING_AMOUNT = 1.3d;
   public static final double PARAM_TRANSACT_SAVINGS_AMOUNT = 20.20d;
   public static final double PARAM_WRITE_CHECK_AMOUNT = 5.0d;
+
+  public static final String getSavingVersion =
+      "SELECT vid FROM " + TABLENAME_SAVINGS + " WHERE custid = %d";
+  public static final String getCheckingVersion =
+      "SELECT vid FROM " + TABLENAME_CHECKING + " WHERE custid = %d";
+
+  public static int getHashSize(String tableName) {
+    return TABLENAME_TO_HASH_SIZE.get(tableName);
+  }
+
+  public static int calculateUniqueId(HashMap<String, Integer> keys, String tableName) {
+    int res = -1;
+    switch (tableName) {
+      case TABLENAME_ACCOUNTS:
+        if (keys.containsKey("custid")) {
+          res = keys.get("custid");
+        } else if (keys.containsKey("name")) {
+          res = keys.get("name");
+        }
+        break;
+      case TABLENAME_CHECKING, TABLENAME_SAVINGS:
+        res = keys.get("custid");
+        break;
+      default:
+        System.out.println("Unknown relation name: " + tableName);
+        break;
+    }
+    return res;
+  }
+
+  public static String getLatestVersion(String tableName, int validationId) {
+    int latestVersion = -1;
+    String finalSQL = "";
+    switch (tableName) {
+      case TABLENAME_ACCOUNTS:
+        break;
+      case TABLENAME_CHECKING:
+        finalSQL = getCheckingVersion.formatted(validationId);
+        break;
+      case TABLENAME_SAVINGS:
+        finalSQL = getSavingVersion.formatted(validationId);
+        break;
+      default:
+        System.out.println("Unknown relation name: " + tableName);
+        break;
+    }
+
+    return finalSQL;
+  }
 }

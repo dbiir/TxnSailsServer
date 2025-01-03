@@ -2,13 +2,15 @@ package org.dbiir.txnsails.common;
 
 import java.io.StringReader;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.stream.Collectors;
 import lombok.Getter;
 import lombok.Setter;
+import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
+import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
+import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
+import net.sf.jsqlparser.expression.operators.relational.*;
 import net.sf.jsqlparser.parser.*;
 import net.sf.jsqlparser.schema.*;
 import net.sf.jsqlparser.statement.*;
@@ -21,26 +23,30 @@ import net.sf.jsqlparser.statement.update.*;
 @Getter
 public class TemplateSQL implements Cloneable {
   private final int op; // 0 for read, 1 for write, 2 for scan
-  private final String sql;
-  private String sql_rewrite;
+  private final String originSQL;
+  private String rewriteSQL;
   private final String relation;
   @Setter private boolean skip;
-  @Setter private boolean needRewriteUnderSI;
-  @Setter private boolean needRewriteUnderRC;
+  private boolean needRewriteUnderSI;
+  private boolean needRewriteUnderRC;
   @Setter private List<Integer> uniqueKeyIndexList; // calculate
   private int uniqueKeyNumber;
-  @Setter @Getter private List<String> columnList;
+  @Setter @Getter private List<Column> columnList;
+  @Getter private List<ConditionInfo> wherePlaceholders;
 
   public TemplateSQL(int op, String relation, String sql) {
     this.op = op;
-    this.sql = sql;
-    this.sql_rewrite = "";
+    this.originSQL = sql;
     this.relation = relation;
     this.columnList = null;
     this.needRewriteUnderSI = false;
     this.needRewriteUnderRC = false;
     this.skip = false;
     this.uniqueKeyIndexList = new ArrayList<>(4);
+    this.rewriteSQL = "";
+
+    // find the placeholders in the where clause
+    findWherePlaceholders();
   }
 
   public void addUniqueKeyIndex(int idx) {
@@ -48,60 +54,55 @@ public class TemplateSQL implements Cloneable {
     this.uniqueKeyNumber++;
   }
 
+  public void setNeedRewriteUnderRC() {
+    this.needRewriteUnderRC = true;
+    rewrite();
+  }
+
+  public void setNeedRewriteUnderSI() {
+    this.needRewriteUnderSI = true;
+    rewrite();
+  }
+
+  private void rewrite() {
+    if (identifySQLType(originSQL) == 1) {
+      this.rewriteSQL = modifyUpdateQuery(originSQL, columnList);
+    } else if (identifySQLType(originSQL) == 0) {
+      this.rewriteSQL = modifySelectQuery(originSQL, columnList);
+    } else {
+      this.rewriteSQL = "";
+    }
+  }
+
   public int getUniqueKeyIdx(int idx) {
     return this.uniqueKeyIndexList.get(idx);
   }
 
-  public String getSQL(CCType ccType) {
-    if (ccType == CCType.RC_TAILOR) {
-      return getSQLUnderRC();
-    } else if (ccType == CCType.SI_TAILOR || ccType == CCType.SER_TRANSITION) {
-      return getSQLUnderSI();
-    }
-    return "";
-  }
-
   public String getSQL() {
     if (needRewriteUnderRC || needRewriteUnderSI) {
-      if (identifySQLType(sql) == 1) {
-        sql_rewrite = modifyUpdateQuery(sql, columnList);
-      } else if (identifySQLType(sql) == 0) {
-        sql_rewrite = modifySelectQuery(sql, columnList);
-      } else {
-        sql_rewrite = "";
-      }
+      return rewriteSQL;
     }
-    return sql_rewrite;
+    return originSQL;
   }
 
   private String getSQLUnderRC() {
     if (needRewriteUnderRC) {
-      if (identifySQLType(sql) == 1) {
-        sql_rewrite = modifyUpdateQuery(sql, columnList);
-      } else if (identifySQLType(sql) == 0) {
-        sql_rewrite = modifySelectQuery(sql, columnList);
-      }
-      return sql_rewrite;
+      return rewriteSQL;
     } else {
-      return sql;
+      return originSQL;
     }
   }
 
   private String getSQLUnderSI() {
     if (needRewriteUnderSI) {
-      if (identifySQLType(sql) == 1) {
-        sql_rewrite = modifyUpdateQuery(sql, columnList);
-      } else if (identifySQLType(sql) == 0) {
-        sql_rewrite = modifySelectQuery(sql, columnList);
-      }
-      return sql_rewrite;
+      return rewriteSQL;
     } else {
-      return sql;
+      return originSQL;
     }
   }
 
   // Method: Add the field "vid" to the SELECT statement and ensure it is added at the end
-  public static String modifySelectQuery(String sql, List<String> columnList) {
+  private String modifySelectQuery(String sql, List<Column> columnList) {
     try {
       // Parse the original SELECT statement
       CCJSqlParserManager parserManager = new CCJSqlParserManager();
@@ -121,11 +122,11 @@ public class TemplateSQL implements Cloneable {
 
       // Add the "vid" field to the SELECT clause
       selectItems.add(vidSelectItem);
-      columnList =
-          Arrays.stream(selectItems.toArray())
-              .filter(obj -> obj instanceof String)
-              .map(obj -> (String) obj)
-              .collect(Collectors.toList());
+      columnList = convertSelectItemsToColumns(selectItems);
+      //          Arrays.stream(selectItems.toArray())
+      //              .filter(obj -> obj instanceof String)
+      //              .map(obj -> (String) obj)
+      //              .collect(Collectors.toList());
       // Return the modified SQL statement
       return selectStatement.toString();
 
@@ -135,8 +136,21 @@ public class TemplateSQL implements Cloneable {
     }
   }
 
+  private List<Column> convertSelectItemsToColumns(List<SelectItem> selectItems) {
+    List<Column> columns = new ArrayList<>();
+    for (SelectItem selectItem : selectItems) {
+      if (selectItem instanceof SelectExpressionItem) {
+        SelectExpressionItem selectExpressionItem = (SelectExpressionItem) selectItem;
+        if (selectExpressionItem.getExpression() instanceof Column) {
+          columns.add((Column) selectExpressionItem.getExpression());
+        }
+      }
+    }
+    return columns;
+  }
+
   // Method: Modify the SQL statement to add the "vid" field and return it
-  public static String modifyUpdateQuery(String sql, List<String> columnList) {
+  private String modifyUpdateQuery(String sql, List<Column> columnList) {
     try {
       // Parse the SQL statement
       CCJSqlParserManager parserManager = new CCJSqlParserManager();
@@ -148,13 +162,16 @@ public class TemplateSQL implements Cloneable {
       Addition addExpression = new Addition(); // Addition represents the "vid + 1" operation
       addExpression.setLeftExpression(vidColumn); // Left side is the "vid" column
       addExpression.setRightExpression(oneValue); // Right side is the constant value 1
+      EqualsTo versionExpression = new EqualsTo(vidColumn, addExpression);
 
       // Add the SetExpression to the UPDATE statement
-      updateStatement.getExpressions().add(addExpression); // Add "vid = vid + 1" to the SET clause
+      updateStatement
+          .getExpressions()
+          .add(versionExpression); // Add "vid = vid + 1" to the SET clause
 
       // Manually add the RETURNING clause, since JSQLParser does not support it directly
       String returningClause = " RETURNING vid";
-      columnList.add("vid");
+      columnList.add(new Column("vid"));
 
       // Return the modified SQL statement
       return updateStatement.toString() + returningClause;
@@ -190,8 +207,52 @@ public class TemplateSQL implements Cloneable {
     }
   }
 
-  public void rewrite() {
-    sql_rewrite = sql;
+  private void findWherePlaceholders() {
+    try {
+      Statement statement = CCJSqlParserUtil.parse(originSQL);
+      if (statement instanceof Update) {
+        Update updateStatement = (Update) statement;
+        Expression where = updateStatement.getWhere();
+        findConditions(where);
+      } else if (statement instanceof Select) {
+        Select selectStatement = (Select) statement;
+        PlainSelect plainSelect = (PlainSelect) selectStatement.getSelectBody();
+        Expression where = plainSelect.getWhere();
+        findConditions(where);
+      }
+    } catch (JSQLParserException e) {
+      e.printStackTrace();
+    }
+  }
+
+  private void findConditions(Expression expression) {
+    if (expression instanceof AndExpression) {
+      AndExpression andExpression = (AndExpression) expression;
+      findConditions(andExpression.getLeftExpression());
+      findConditions(andExpression.getRightExpression());
+    } else if (expression instanceof OrExpression) {
+      OrExpression orExpression = (OrExpression) expression;
+      findConditions(orExpression.getLeftExpression());
+      findConditions(orExpression.getRightExpression());
+    } else if (expression instanceof EqualsTo
+        || expression instanceof GreaterThan
+        || expression instanceof MinorThan
+        || expression instanceof GreaterThanEquals
+        || expression instanceof MinorThanEquals) {
+      BinaryExpression binaryExpression = (BinaryExpression) expression;
+      Column column = (Column) binaryExpression.getLeftExpression();
+      Expression rightExpression = binaryExpression.getRightExpression();
+      String value = null;
+      int position = -1;
+      if (rightExpression instanceof JdbcParameter) {
+        System.out.println(
+            column.getColumnName() + ": " + ((JdbcParameter) rightExpression).getIndex());
+        this.wherePlaceholders.add(new ConditionInfo(column, (JdbcParameter) rightExpression));
+      } else {
+        System.out.println(
+            "[No placeholder]: " + column.getColumnName() + ", " + (StringValue) rightExpression);
+      }
+    }
   }
 
   @Override

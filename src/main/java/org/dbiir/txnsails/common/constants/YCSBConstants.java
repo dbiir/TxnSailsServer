@@ -40,7 +40,41 @@ public abstract class YCSBConstants {
 
   public static final HashMap<String, Integer> TABLENAME_TO_INDEX = new HashMap<>(1);
 
+  public static String getUserTableVersion =
+      "SELECT vid FROM " + TABLE_NAME + " WHERE YCSB_KEY = %d";
+
   static {
     TABLENAME_TO_INDEX.put(TABLE_NAME, 1);
+  }
+
+  public static final HashMap<String, Integer> TABLENAME_TO_HASH_SIZE = new HashMap<>(1);
+
+  static {
+    TABLENAME_TO_HASH_SIZE.put(TABLE_NAME, 1000000);
+  }
+
+  public static int getHashSize(String tableName) {
+    return TABLENAME_TO_HASH_SIZE.get(tableName);
+  }
+
+  public static int calculateUniqueId(HashMap<String, Integer> keys, String tableName) {
+    int res = -1;
+    if (tableName.equals(TABLE_NAME)) {
+      res = keys.get("YCSB_KEY");
+    } else {
+      System.out.println("Unknown relation name: " + tableName);
+    }
+    return res;
+  }
+
+  public static String getLatestVersion(String tableName, int validationId) {
+    String finalSQL = "";
+    if (tableName.equals(TABLE_NAME)) {
+      finalSQL = getUserTableVersion.formatted(validationId);
+    } else {
+      System.out.println("Unknown relation name: " + tableName);
+    }
+
+    return finalSQL;
   }
 }

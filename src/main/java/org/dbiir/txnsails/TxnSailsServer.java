@@ -1,5 +1,6 @@
 package org.dbiir.txnsails;
 
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
@@ -10,6 +11,8 @@ import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.codec.string.StringEncoder;
+import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -23,16 +26,11 @@ import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
-import org.apache.commons.configuration2.XMLConfiguration;
-import org.apache.commons.configuration2.builder.FileBasedConfigurationBuilder;
-import org.apache.commons.configuration2.builder.fluent.Parameters;
-import org.apache.commons.configuration2.convert.DisabledListDelimiterHandler;
-import org.apache.commons.configuration2.ex.ConfigurationException;
-import org.apache.commons.configuration2.tree.xpath.XPathExpressionEngine;
 import org.apache.commons.lang3.StringUtils;
 import org.dbiir.txnsails.common.DatabaseType;
+import org.dbiir.txnsails.common.JacksonXmlConfiguration;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
-import org.dbiir.txnsails.execution.validation.LockTable;
+import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
 import org.dbiir.txnsails.worker.OfflineWorker;
 import org.dbiir.txnsails.worker.OnlineWorker;
 
@@ -40,7 +38,7 @@ public class TxnSailsServer {
   private static int DEFAULT_AUXILIARY_THREAD_NUM = 16; // used for
 
   public static void main(String[] args)
-      throws InterruptedException, ParseException, ConfigurationException, SQLException {
+      throws InterruptedException, ParseException, SQLException, IOException {
     CommandLineParser parser = new DefaultParser();
     Options options =
         new Options()
@@ -51,11 +49,11 @@ public class TxnSailsServer {
 
     String configFile = argsLine.getOptionValue("c").trim();
 
-    XMLConfiguration xmlConfig = buildConfiguration(configFile);
+    JacksonXmlConfiguration xmlConfig = buildConfiguration(configFile);
     AtomicInteger genWorkerId = new AtomicInteger(0);
     WorkloadConfiguration workloadConfiguration = loadConfiguration(xmlConfig);
     List<Connection> auxiliaryConnectionList = makeAuxiliaryConnections(workloadConfiguration);
-    LockTable.getInstance()
+    ValidationMetaTable.getInstance()
         .initHotspot(workloadConfiguration.getBenchmarkName(), auxiliaryConnectionList);
 
     EventLoopGroup bossGroup = new NioEventLoopGroup();
@@ -68,7 +66,7 @@ public class TxnSailsServer {
               new ChannelInitializer<SocketChannel>() {
                 @Override
                 public void initChannel(SocketChannel ch) throws Exception {
-                  ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(1024, 0, 4, 0, 4));
+                  ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(4096, 0, 4, 0, 4));
                   // Encoder
                   ch.pipeline().addLast(new LengthFieldPrepender(4));
                   ch.pipeline().addLast(new StringDecoder());
@@ -86,27 +84,16 @@ public class TxnSailsServer {
     }
   }
 
-  public static XMLConfiguration buildConfiguration(String filename) throws ConfigurationException {
-    String currentPath = System.getProperty("user.dir");
+  public static JacksonXmlConfiguration buildConfiguration(String filename) throws IOException {
+    //    String currentPath = System.getProperty("user.dir");
+    //    System.out.println("Current working directory: " + currentPath);
+    //    System.out.println("Loading configuration from " + filename);
 
-    // 打印当前工作目录
-    System.out.println("Current working directory: " + currentPath);
-    System.out.println("Loading configuration from " + filename);
-    Parameters params = new Parameters();
-    FileBasedConfigurationBuilder<XMLConfiguration> builder =
-        new FileBasedConfigurationBuilder<>(XMLConfiguration.class)
-            .configure(
-                params
-                    .xml()
-                    .setFileName(filename)
-                    .setListDelimiterHandler(new DisabledListDelimiterHandler())
-                    .setExpressionEngine(new XPathExpressionEngine()));
-    return builder.getConfiguration();
+    XmlMapper xmlMapper = new XmlMapper();
+    return xmlMapper.readValue(new File(filename), JacksonXmlConfiguration.class);
   }
 
-  private static WorkloadConfiguration loadConfiguration(XMLConfiguration xmlConfig)
-      throws ParseException {
-    int lastTxnId = 0;
+  private static WorkloadConfiguration loadConfiguration(JacksonXmlConfiguration xmlConfig) {
     // ----------------------------------------------------------------
     // BEGIN LOADING BENCHMARK CONFIGURATION
     // Simplify the evaluation, the config file is provided by application, TxnSails would provide
@@ -117,27 +104,23 @@ public class TxnSailsServer {
     wrkld.setXmlConfig(xmlConfig);
 
     // Pull in database configuration
-    wrkld.setDatabaseType(DatabaseType.get(xmlConfig.getString("type")));
-    wrkld.setDriverClass(xmlConfig.getString("driver"));
-    wrkld.setUrl(xmlConfig.getString("url"));
-    wrkld.setUsername(xmlConfig.getString("username"));
-    wrkld.setPassword(xmlConfig.getString("password"));
-    wrkld.setRandomSeed(xmlConfig.getInt("randomSeed", -1));
-    wrkld.setBatchSize(xmlConfig.getInt("batchsize", 128));
-    wrkld.setMaxRetries(xmlConfig.getInt("retries", 3));
-    wrkld.setNewConnectionPerTxn(xmlConfig.getBoolean("newConnectionPerTxn", false));
-    wrkld.setReconnectOnConnectionFailure(
-        xmlConfig.getBoolean("reconnectOnConnectionFailure", true));
-    //
-    wrkld.setBenchmarkName(xmlConfig.getString("benchmark", "ycsb").toLowerCase());
+    wrkld.setDatabaseType(DatabaseType.get(xmlConfig.getType()));
+    wrkld.setDriverClass(xmlConfig.getDriver());
+    wrkld.setUrl(xmlConfig.getUrl());
+    wrkld.setUsername(xmlConfig.getUsername());
+    wrkld.setPassword(xmlConfig.getPassword());
+    wrkld.setRandomSeed(xmlConfig.getRandomSeed());
+    wrkld.setBatchSize(xmlConfig.getBatchsize());
+    wrkld.setMaxRetries(xmlConfig.getMaxRetries());
+    wrkld.setNewConnectionPerTxn(xmlConfig.isNewConnectionPerTxn());
+    wrkld.setReconnectOnConnectionFailure(xmlConfig.isReconnectOnConnectionFailure());
+    wrkld.setBenchmarkName(xmlConfig.getBenchmark().toLowerCase());
 
-    int terminals = xmlConfig.getInt("terminals", 0);
+    int terminals = xmlConfig.getTerminals();
     wrkld.setTerminals(terminals);
 
-    String isolationMode =
-        xmlConfig.getString("benchmark[not(@bench)]", "TRANSACTION_SERIALIZABLE");
-    wrkld.setScaleFactor(xmlConfig.getDouble("scalefactor", 1.0));
-    String type = xmlConfig.getString("concurrencyControlType", "SERIALIZABLE");
+    wrkld.setScaleFactor(xmlConfig.getScalefactor());
+    String type = xmlConfig.getConcurrencyControlType();
     wrkld.setConcurrencyControlType(type);
 
     return wrkld;
@@ -234,6 +217,7 @@ public class TxnSailsServer {
           response = "OK#" + idx; // response with the unique sql index in server-side
           break;
         case "register_end":
+        case "analysis":
           response = "OK";
           OfflineWorker.getINSTANCE().register_end(args);
           break;

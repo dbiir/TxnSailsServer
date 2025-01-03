@@ -20,9 +20,9 @@ package org.dbiir.txnsails.execution;
 import java.sql.Connection;
 import lombok.Getter;
 import lombok.Setter;
-import org.apache.commons.configuration2.XMLConfiguration;
 import org.dbiir.txnsails.common.CCType;
 import org.dbiir.txnsails.common.DatabaseType;
+import org.dbiir.txnsails.common.JacksonXmlConfiguration;
 
 public class WorkloadConfiguration {
 
@@ -38,7 +38,7 @@ public class WorkloadConfiguration {
   @Setter @Getter private double scaleFactor = 1.0;
   @Getter @Setter private double selectivity = -1.0;
   @Setter @Getter private int terminals;
-  @Setter @Getter private XMLConfiguration xmlConfig = null;
+  @Setter @Getter private JacksonXmlConfiguration xmlConfig = null;
 
   @Getter
   private int isolationMode =

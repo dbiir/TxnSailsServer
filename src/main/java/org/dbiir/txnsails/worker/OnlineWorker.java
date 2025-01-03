@@ -5,14 +5,15 @@ import java.sql.*;
 import java.util.*;
 import lombok.Getter;
 import lombok.Setter;
+import net.sf.jsqlparser.schema.Column;
 import org.apache.commons.lang3.StringUtils;
 import org.dbiir.txnsails.common.*;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
 import org.dbiir.txnsails.execution.utils.RWRecord;
 import org.dbiir.txnsails.execution.utils.SQLStmt;
-import org.dbiir.txnsails.execution.validation.LockTable;
 import org.dbiir.txnsails.execution.validation.TransactionCollector;
 import org.dbiir.txnsails.execution.validation.ValidationMeta;
+import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
 
 public class OnlineWorker {
   protected Connection conn = null;
@@ -32,14 +33,11 @@ public class OnlineWorker {
   // support at most 20 validation entries in a single transaction
   private static final int MAX_VALIDATION_META = 20;
   private static final double SAMPLE_PROBABILITY = 0.01;
-  private ValidationMeta[] validationMetas = new ValidationMeta[MAX_VALIDATION_META];
-  private ValidationMeta[] auxValidationMetas = new ValidationMeta[MAX_VALIDATION_META];
-  private ValidationMeta[] validationMetaUnderRC = new ValidationMeta[MAX_VALIDATION_META];
-  private ValidationMeta[] validationMetaUnderSI = new ValidationMeta[MAX_VALIDATION_META];
-  private int validationMetaIdx = 0;
+  private static final long mask = 0x7FFFFFFFFFFFFFFFL;
+  private final ValidationMeta[] validationMetaUnderRC = new ValidationMeta[MAX_VALIDATION_META];
+  private final ValidationMeta[] validationMetaUnderSI = new ValidationMeta[MAX_VALIDATION_META];
   private int validationMetaIdxUnderRC = 0;
   private int validationMetaIdxUnderSI = 0;
-  private int auxValidationMetaIdx = 0;
   private boolean shouldSample = false;
   private int transactionId;
   // variables for sampling
@@ -78,10 +76,12 @@ public class OnlineWorker {
     MetaWorker.getINSTANCE().cloneTemplatesAfterAnalysis(this.templates);
     // init the validation metas
     for (int i = 0; i < MAX_VALIDATION_META; i++) {
-      this.validationMetas[i] = new ValidationMeta();
+      this.validationMetaUnderRC[i] = new ValidationMeta();
+      this.validationMetaUnderSI[i] = new ValidationMeta();
     }
     // init the first transactionID
-    this.transactionId = MetaWorker.getINSTANCE().fetchTransactionId();
+    this.transactionId =
+        (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
     // init sample container
     this.readSet = new ArrayList<>(8);
     this.writeSet = new ArrayList<>(8);
@@ -107,7 +107,7 @@ public class OnlineWorker {
    */
   public String execute(String[] args) throws SQLException {
     if (args.length < 2) return "";
-    StringBuffer results = new StringBuffer();
+    StringBuilder results = new StringBuilder();
     TemplateSQL templateSQL =
         this.templates.get(args[0]).getSQLTemplateByIndex(Integer.parseInt(args[1]));
 
@@ -121,9 +121,13 @@ public class OnlineWorker {
                   : sampleMeta;
       meta.setTemplateSQL(templateSQL);
       if (templateSQL.getUniqueKeyNumber() <= args.length - 2) {
-        for (int i = 0; i < templateSQL.getUniqueKeyNumber(); i++) {
-          meta.addUniqueKey(Integer.parseInt(args[2 + templateSQL.getUniqueKeyIdx(i)]));
-        }
+        meta.addRuntimeArgs(Arrays.asList(args).subList(2, args.length));
+        System.out.println(
+            templateSQL.getSQL()
+                + ", "
+                + Arrays.asList(args).subList(2, args.length)
+                + ", Id for validation: "
+                + meta.getIdForValidation());
 
         if (shouldSample) {
           addSampleMeta(
@@ -134,8 +138,7 @@ public class OnlineWorker {
         if (templateSQL.isNeedRewriteUnderRC()) {
           validationMetaIdxUnderRC++;
           if (templateSQL.isNeedRewriteUnderSI()) {
-            validationMetaUnderSI[validationMetaIdxUnderSI] = meta;
-            validationMetaIdxUnderSI++;
+            validationMetaUnderSI[validationMetaIdxUnderSI++].deepCopy(meta);
           }
         }
       } else {
@@ -148,11 +151,23 @@ public class OnlineWorker {
     try (PreparedStatement stmtc =
         this.getPreparedStatement(
             conn, new SQLStmt(rewrite_sql), Arrays.copyOfRange(args, 1, args.length))) {
-      try (ResultSet r0 = stmtc.executeQuery()) {
+      try (ResultSet rs = stmtc.executeQuery()) {
         int v = -1;
-        // TODO: parse and wrap the results
-
-        // TODO: record the version if it needs, support scan-based
+        List<List<String>> rows = new ArrayList<>(2);
+        while (rs.next()) {
+          List<String> row = new ArrayList<>();
+          for (Column col : templateSQL.getColumnList()) {
+            String columnName = col.getColumnName();
+            if (columnName.equalsIgnoreCase("vid")) {
+              v = rs.getInt(columnName);
+            } else {
+              row.add(rs.getString(columnName));
+            }
+          }
+        }
+        // parse and wrap the results
+        results.append(wrapResults(rows));
+        // record the version if it needs, support scan-based
         if (templateSQL.isNeedRewriteUnderRC()) {
           validationMetaUnderSI[validationMetaIdxUnderSI - 1].setOldVersions(v);
           if (templateSQL.isNeedRewriteUnderSI()) {
@@ -173,8 +188,10 @@ public class OnlineWorker {
     try {
       validate();
       conn.commit();
+      releaseValidationLocks(true);
       if (shouldSample) sampleTransaction(true);
     } catch (SQLException ex) {
+      releaseValidationLocks(false);
       rollback();
       if (shouldSample) sampleTransaction(false);
       throw ex;
@@ -183,21 +200,23 @@ public class OnlineWorker {
     clearPreviousTransactionInfo();
     /* sample transaction if txnSails needs and choose whether sample next transaction */
     shouldSample = random.nextDouble() < SAMPLE_PROBABILITY;
-    MetaWorker.getINSTANCE().fetchTransactionId();
+    this.transactionId =
+        (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
     // switch the isolation mode
-
+    if (Adapter.getInstance().isInSwitchPhase()) {
+      switchConnectionIsolationMode();
+    }
   }
 
   public void rollback() throws SQLException {
     try {
       conn.rollback();
-    } catch (SQLException ex) {
-      throw ex;
     } finally {
       clearPreviousTransactionInfo();
       /* sample transaction if txnSails needs and choose whether sample next transaction */
       shouldSample = random.nextDouble() < SAMPLE_PROBABILITY;
-      MetaWorker.getINSTANCE().fetchTransactionId();
+      this.transactionId =
+          (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
       // switch the isolation
       if (Adapter.getInstance().isInSwitchPhase()) {
         switchConnectionIsolationMode();
@@ -238,26 +257,28 @@ public class OnlineWorker {
         ValidationMeta validationMeta = this.validationMetaUnderRC[i];
         TemplateSQL templateSQL = validationMeta.getTemplateSQL();
         LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
-        LockTable.getInstance()
+        ValidationMetaTable.getInstance()
             .tryValidationLock(
                 templateSQL.getRelation(),
                 this.transactionId,
                 validationMeta.getIdForValidation(),
                 lockType,
                 Adapter.getInstance().getCCType());
+        validationMeta.setLocked(true);
       }
     } else if (lockManner == CCType.SI_TAILOR) {
       for (int i = 0; i < validationMetaIdxUnderSI; i++) {
         ValidationMeta validationMeta = this.validationMetaUnderSI[i];
         TemplateSQL templateSQL = validationMeta.getTemplateSQL();
         LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
-        LockTable.getInstance()
+        ValidationMetaTable.getInstance()
             .tryValidationLock(
                 templateSQL.getRelation(),
                 this.transactionId,
                 validationMeta.getIdForValidation(),
                 lockType,
                 Adapter.getInstance().getCCType());
+        validationMeta.setLocked(true);
       }
     }
 
@@ -275,12 +296,11 @@ public class OnlineWorker {
 
   private void validateSingleMeta(ValidationMeta meta) throws SQLException {
     long v =
-        LockTable.getInstance()
+        ValidationMetaTable.getInstance()
             .getHotspotVersion(
                 meta.getTemplateSQL().getRelation(), (long) meta.getIdForValidation());
     if (v >= 0) {
       if (v != meta.getOldVersions()) {
-        releaseValidationLocks();
         String msg =
             String.format(
                 "Validation failed for key #%d, %s",
@@ -288,28 +308,21 @@ public class OnlineWorker {
         throw new SQLException(msg, "500");
       }
     } else {
-      try {
-        v =
-            LockTable.getInstance()
-                .fetchUnknownVersionCache(
-                    meta.getTemplateSQL().getRelation(), meta.getIdForValidation());
-        if (v != meta.getOldVersions()) {
-          releaseValidationLocks();
-          String msg =
-              String.format(
-                  "Validation failed for ycsb_key #%d, usertable", meta.getIdForValidation());
-          throw new SQLException(msg, "500");
-        }
-      } catch (SQLException ex) {
-        releaseValidationLocks();
+      v =
+          ValidationMetaTable.getInstance()
+              .fetchUnknownVersionCache(
+                  meta.getTemplateSQL().getRelation(), meta.getIdForValidation());
+      if (v != meta.getOldVersions()) {
+        //          releaseValidationLocks(false);
+        String msg =
+            String.format(
+                "Validation failed for ycsb_key #%d, usertable", meta.getIdForValidation());
+        throw new SQLException(msg, "500");
       }
     }
   }
 
   private void clearPreviousTransactionInfo() {
-    this.validationMetaIdx = 0;
-    this.transactionId = MetaWorker.getINSTANCE().fetchTransactionId();
-    this.auxValidationMetaIdx = 0;
     this.validationMetaIdxUnderRC = 0;
     this.validationMetaIdxUnderSI = 0;
   }
@@ -322,21 +335,35 @@ public class OnlineWorker {
     }
   }
 
-  private void releaseValidationLocks() {
-    for (int i = this.validationMetaIdx - 1; i >= 0; i--) {
-      ValidationMeta meta = validationMetas[i];
-      TemplateSQL templateSQL = meta.getTemplateSQL();
-      LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
-      LockTable.getInstance()
-          .releaseValidationLock(templateSQL.getRelation(), meta.getIdForValidation(), lockType);
-      if (lockType == LockType.EX) {
-        // update the hot version cache (HVC) if the entry is cached in memory
-        LockTable.getInstance()
-            .updateHotspotVersion(
-                templateSQL.getRelation(), meta.getIdForValidation(), meta.getOldVersions());
+  private void releaseValidationLocks(boolean success) {
+    if (this.lockManner == CCType.RC_TAILOR) {
+      for (int i = 0; i < validationMetaIdxUnderRC; i++) {
+        ValidationMeta meta = validationMetaUnderRC[i];
+        if (!meta.isLocked()) continue;
+        releaseSingleMeta(meta, success);
+      }
+    } else if (this.lockManner == CCType.SI_TAILOR) {
+      for (int i = 0; i < validationMetaIdxUnderSI; i++) {
+        ValidationMeta meta = validationMetaUnderSI[i];
+        if (!meta.isLocked()) continue;
+        releaseSingleMeta(meta, success);
       }
     }
-    validationMetaIdx = 0;
+  }
+
+  private void releaseSingleMeta(ValidationMeta meta, boolean success) {
+    TemplateSQL templateSQL = meta.getTemplateSQL();
+    LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
+    ValidationMetaTable.getInstance()
+        .releaseValidationLock(templateSQL.getRelation(), meta.getIdForValidation(), lockType);
+    if (success && lockType == LockType.EX) {
+      // update the hot version cache (HVC) if the entry is cached in memory
+      ValidationMetaTable.getInstance()
+          .updateHotspotVersion(
+              templateSQL.getRelation(), meta.getIdForValidation(), meta.getOldVersions() + 1);
+    }
+    meta.setLocked(false);
+    meta.clearInfo();
   }
 
   private boolean shouldRewrite(TemplateSQL templateSQL, CCType t) {

@@ -25,6 +25,7 @@ public class OfflineWorker {
    * record args[5]: unique sql index in client-side
    */
   public int register(String[] args) {
+    if (args.length < 4) return -1;
     System.out.println(
         "register: "
             + args[0]
@@ -36,7 +37,6 @@ public class OfflineWorker {
             + args[3]
             + "\tlength:"
             + args.length);
-    if (args.length < 4) return -1;
     if (args[1].equalsIgnoreCase("1") || args[1].equalsIgnoreCase("write")) {
       if (args.length == 5)
         return MetaWorker.getINSTANCE()
@@ -52,7 +52,6 @@ public class OfflineWorker {
 
   /** register end invoke the analysis and flush the analysis results in local disk */
   public void register_end(String[] args) {
-    if (args.length < 1) return;
     MetaWorker.getINSTANCE().analysisWorkload();
     flush_analysis_results();
   }

@@ -59,9 +59,9 @@ public class TransactionTemplate implements Cloneable {
 
   public void setSQLRewriteByIndex(int idx, String isolation) {
     if (isolation.equals("RC")) {
-      sqls[idx].setNeedRewriteUnderRC(true);
+      sqls[idx].setNeedRewriteUnderRC();
     } else if (isolation.equals("SI")) {
-      sqls[idx].setNeedRewriteUnderSI(true);
+      sqls[idx].setNeedRewriteUnderSI();
     }
   }
 
