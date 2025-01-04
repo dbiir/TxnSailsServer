@@ -27,15 +27,19 @@ import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.lang3.StringUtils;
+import org.dbiir.txnsails.common.CCType;
 import org.dbiir.txnsails.common.DatabaseType;
 import org.dbiir.txnsails.common.JacksonXmlConfiguration;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
+import org.dbiir.txnsails.execution.utils.FileUtil;
 import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
+import org.dbiir.txnsails.worker.Flusher;
 import org.dbiir.txnsails.worker.OfflineWorker;
 import org.dbiir.txnsails.worker.OnlineWorker;
 
 public class TxnSailsServer {
   private static int DEFAULT_AUXILIARY_THREAD_NUM = 16; // used for
+  private static Thread flushThread;
 
   public static void main(String[] args)
       throws InterruptedException, ParseException, SQLException, IOException {
@@ -43,6 +47,7 @@ public class TxnSailsServer {
     Options options =
         new Options()
             .addOption("c", "config", true, "[required] Workload configuration file")
+            .addOption("d", "directory", true, "Base directory for the meta files")
             .addOption("p", "phase", true, "Online predict or offline training");
 
     CommandLine argsLine = parser.parse(options, args);
@@ -59,6 +64,8 @@ public class TxnSailsServer {
     EventLoopGroup bossGroup = new NioEventLoopGroup();
     EventLoopGroup workerGroup = new NioEventLoopGroup();
     try {
+      createFlushThread(argsLine, workloadConfiguration.getBenchmarkName(), workloadConfiguration.getConcurrencyControlType());
+      System.out.println("Create Flush Thread");
       ServerBootstrap b = new ServerBootstrap();
       b.group(bossGroup, workerGroup)
           .channel(NioServerSocketChannel.class)
@@ -79,6 +86,7 @@ public class TxnSailsServer {
       ChannelFuture f = b.bind(9876).sync();
       f.channel().closeFuture().sync();
     } finally {
+      finishFlushThread();
       workerGroup.shutdownGracefully();
       bossGroup.shutdownGracefully();
     }
@@ -139,6 +147,37 @@ public class TxnSailsServer {
       }
     }
     return connectionList;
+  }
+
+  private static void createFlushThread(CommandLine argsLine, String benchmark, CCType ccType) {
+    String metaDirectory = "metas";
+    boolean onlinePredict = false;
+    if (argsLine.hasOption("d")) {
+      metaDirectory = argsLine.getOptionValue("d").trim();
+      if (metaDirectory.contains("results")) {
+        metaDirectory = metaDirectory.replace("results", "metas");
+        int lastIndex = metaDirectory.lastIndexOf("_");
+
+        if (lastIndex != -1) {
+          metaDirectory = metaDirectory.substring(0, lastIndex - 1);
+          metaDirectory += "/";
+        }
+      }
+    }
+
+    if (argsLine.hasOption("p")) {
+      if (argsLine.getOptionValue("p").contains("online")) {
+        onlinePredict = true;
+      }
+    }
+
+    FileUtil.makeDirIfNotExists(metaDirectory);
+    flushThread = new Thread(new Flusher(benchmark, metaDirectory, ccType,onlinePredict));
+    flushThread.start();
+  }
+
+  private static void finishFlushThread() {
+    flushThread.interrupt();
   }
 
   private static class ServerHandler extends ChannelInboundHandlerAdapter {
