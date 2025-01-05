@@ -128,7 +128,7 @@ def run_once(f: str, online: bool):
         run_shell_command(remote_cmd, 240)
         print("Finish config - { " + case_name + " }")
         # time.sleep(5)
-        refresh_output_channel()
+        # refresh_output_channel()
         if online:
             if process is not None:
                 try:
