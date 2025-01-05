@@ -36,11 +36,7 @@ class GraphClassificationModel(torch.nn.Module):
         # Define a fully connected layer for classification
         self.fc1 = Linear(hidden_channels, hidden_channels)
         self.fc2 = Linear(hidden_channels, out_channels)
-<<<<<<< HEAD
-        
-=======
 
->>>>>>> origin/syp_branch
         self.dropout = Dropout(0.5)
 
     def forward(self, data):

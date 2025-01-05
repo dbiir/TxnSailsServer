@@ -106,6 +106,8 @@ The following options are provided:
 ### Running example
 You can run the command to execute the hotspot-128 test of the SmallBank benchmark in PostgreSQL:
 ```shell
+python3 runTxnSailsServer.py -w ycsb -f dynamic-128 -e postgresql -p online
+
 python3 runTxnSailsServer.py -w smallbank -f hotspot-256 -e postgresql -p online
 ```
 

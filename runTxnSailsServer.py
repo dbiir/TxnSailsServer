@@ -25,7 +25,7 @@ functions = ["scalability", "hotspot-128","skew-128", "wc_ratio-256",
             "bal_ratio-128", "wc_ratio-128", "random-128", "no_ratio-128", "pa_ratio-128",
              "wr_ratio-128", "dynamic-128", "switch-128"]
 strategies = ["SERIALIZABLE", "SI_TAILOR", "RC_TAILOR"]
-remote_machine_ip = "21.6.117.10"
+remote_machine_ip = "21.6.68.184"
 
 
 def run_shell_command(cmd: str, timeout):
@@ -109,21 +109,22 @@ def run_once(f: str, online: bool):
     unique_ts = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     for conf_file in traverse_dir(config_path):
         if online:
-            process = subprocess.Popen("python3 isolation_adapter/adapter.py -w " + args.wl, shell=True, preexec_fn=os.setsid)
+            process = subprocess.Popen("python3 adapter.py -w " + args.wl, shell=True, preexec_fn=os.setsid)
             time.sleep(5)
         meta_dir = meta_prefix + args.wl + "/" + f + "/" + unique_ts + "/"
+        result_dir = result_prefix + args.wl + "/" + f + "/" + unique_ts + "/"
         case_name = os.path.splitext(os.path.basename(conf_file))[0]
-        output_file_path = meta_dir + case_name + "/stdout.log"
+        output_file_path = result_dir + case_name + "/stdout.log"
         print("Run config - { " + case_name + " }")
         # 1. start txnSails server in this server
-        java_cmd = prefix_cmd_local + " -c " + config_path_local  + " -d " + meta_dir + case_name + " -p " + phase
+        java_cmd = prefix_cmd_local + " -c " + config_path_local  + " -d " + result_dir + case_name + " -p " + phase
         process = subprocess.Popen(java_cmd, shell=True, preexec_fn=os.setsid)
         time.sleep(5)
         # 1. create the remote directory
-        remote_cmd = "ssh " + remote_machine_ip + " \"mkdir -p" + remote_client_dir + "/metas/" + args.wl + "/" + f + "/" + unique_ts + " \""
+        remote_cmd = "ssh " + remote_machine_ip + " \"mkdir -p " + remote_client_dir + result_dir
         run_shell_command(remote_cmd, 10)
         cmd_remote_java = prefix_cmd_remote_java + " -b " + args.wl + " -c " + config_path + case_name + ".xml" + \
-            " --execute=true -d " + meta_dir + case_name + " -p " + phase + " > " + output_file_path
+            " --execute=true -d " + result_dir + case_name + " -p " + phase + " > " + output_file_path
         remote_cmd = "ssh " + remote_machine_ip + " \"cd " + remote_client_dir + " ; " + cmd_remote_java + "\""
         run_shell_command(remote_cmd, 240)
         print("Finish config - { " + case_name + " }")
