@@ -52,16 +52,15 @@ thereby further reducing application development costs.
 
 ## Evaluation
 ### Environment and Configuration
-We conducted our experiments on two servers, each equipped with an AMD EPYC 7K62 Processor, which includes 16 cores, 64 GB of DRAM, and a 500 GB SSD. 
+We conducted our experiments on two servers, each equipped with an Intel(R) Xeon(R) Platinum 8361HC CPU @ 2.60GHz processer, which includes 24 physical cores, 64 GB of DRAM, and a 500 GB SSD. 
 The operation system was CentOS Linux release 7.9. 
 
 We utilize BenchBase as our benchmark simulator, deploying it on a single server. We modify it to interface with TxnSails. By default, the experiments are conducted using 128 client terminals.
 
-We deployed PostgreSQL 15.2~\cite{PostgreSQL} as the database engine. For our database configuration, we allocated a buffer pool size of 24GB, limited the maximum number of connections to 2000, and established a lock wait timeout of 100 ms. To eliminate network-related variables from affecting the results, both \sysname and PostgreSQL were deployed on another server. 
+We deployed PostgreSQL 15.2 as the database engine. For our database configuration, we allocated a buffer pool size of 24GB, limited the maximum number of connections to 2000, and established a lock wait timeout of 100 ms. To eliminate network-related variables from affecting the results, both \sysname and PostgreSQL were deployed on another server. 
 
 ### How to Build
-TxnSails requires JDK 21 and Maven 3.9+ for compilation. To run the build scripts, you need to ensure that Python 3.9+ is installed.
-Meanwhile, the graph learning module requires <TODO>.
+TxnSails requires JDK 21 and Maven 3.9+ for compilation. To run the build scripts, you need to ensure that Python 3.9+ is installed. Meanwhile, the graph learning module requires <TODO>.
 
 You can run the following command to build TxnSails server:
 
@@ -107,7 +106,7 @@ The following options are provided:
 ### Running example
 You can run the command to execute the hotspot-128 test of the SmallBank benchmark in PostgreSQL:
 ```shell
-python3 runTxnSailsServer.py -w smallbank -f hotspot-256 -e postgresql
+python3 runTxnSailsServer.py -w smallbank -f hotspot-256 -e postgresql -p online
 ```
 
 plot the results by python.

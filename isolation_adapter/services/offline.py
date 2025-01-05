@@ -13,9 +13,8 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 import random
 
-from tristar_adapter.graph_construct.graph import Graph
-from tristar_adapter.graph_training.train import GraphClassificationModel
-from tristar_adapter.graph_training.train_embedding import GraphClassificationModelEmbedding
+from isolation_adapter.graph_construct.graph import Graph
+from isolation_adapter.graph_training.train import GraphClassificationModel
 from torch.cuda.amp import GradScaler, autocast
 
 
@@ -88,7 +87,7 @@ class OfflineService:
 
     def train(self):
         if self.model is None:
-            self.model = GraphClassificationModelEmbedding(in_channels=4, edge_in_channels=2, hidden_channels=64, out_channels=3)
+            self.model = GraphClassificationModel(in_channels=4, edge_in_channels=2, hidden_channels=64, out_channels=3)
             if torch.cuda.is_available():
                 self.device = torch.device('cuda')
             else:
@@ -233,6 +232,5 @@ class OfflineService:
             pred = result.flatten()
             # print("data.y", data.y)
             # print("pred", pred)
-            # TODO:
             correct += ((pred == 1.0) & (data.y == 1.0)).sum().item()
         return correct / len(loader.dataset)

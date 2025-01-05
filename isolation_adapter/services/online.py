@@ -6,7 +6,7 @@ import torch.nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
 
-from tristar_adapter.graph_construct.graph import Graph
+from isolation_adapter.graph_construct.graph import Graph
 
 
 class OnlineService:

@@ -2,8 +2,8 @@ import argparse
 import signal
 import socket
 
-from tristar_adapter.services.offline import OfflineService
-from tristar_adapter.services.online import OnlineService
+from isolation_adapter.services.offline import OfflineService
+from isolation_adapter.services.online import OnlineService
 
 server_sockets: list[socket.socket] = []
 client_sockets: list[socket.socket] = []

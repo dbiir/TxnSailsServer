@@ -264,7 +264,7 @@ public class TxnSailsServer {
         default:
           response = "Unknown function: " + functionName;
       }
-      System.out.println(response);
+//      System.out.println(response);
       ByteBuf resp = ctx.alloc().buffer(response.length());
       resp.writeBytes(response.getBytes(StandardCharsets.UTF_8));
       ctx.writeAndFlush(resp).sync();

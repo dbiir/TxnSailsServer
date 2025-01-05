@@ -19,6 +19,7 @@ import net.sf.jsqlparser.statement.select.Select;
 import net.sf.jsqlparser.statement.select.SelectExpressionItem;
 import net.sf.jsqlparser.statement.select.SelectItem;
 import net.sf.jsqlparser.statement.update.*;
+import org.dbiir.txnsails.common.constants.YCSBConstants;
 
 @Getter
 public class TemplateSQL implements Cloneable {
@@ -44,6 +45,7 @@ public class TemplateSQL implements Cloneable {
     this.skip = false;
     this.uniqueKeyIndexList = new ArrayList<>(4);
     this.rewriteSQL = "";
+    this.wherePlaceholders = new ArrayList<>();
 
     // find the placeholders in the where clause
     findWherePlaceholders();
@@ -209,6 +211,7 @@ public class TemplateSQL implements Cloneable {
 
   private void findWherePlaceholders() {
     try {
+      analyseTemplate();
       Statement statement = CCJSqlParserUtil.parse(originSQL);
       if (statement instanceof Update) {
         Update updateStatement = (Update) statement;
@@ -252,6 +255,14 @@ public class TemplateSQL implements Cloneable {
         System.out.println(
             "[No placeholder]: " + column.getColumnName() + ", " + (StringValue) rightExpression);
       }
+    }
+  }
+
+  // specific for YCSB workload
+  private void analyseTemplate() {
+    if (this.relation.equals(YCSBConstants.TABLE_NAME)) {
+      this.needRewriteUnderRC = true;
+      this.needRewriteUnderSI = true;
     }
   }
 
