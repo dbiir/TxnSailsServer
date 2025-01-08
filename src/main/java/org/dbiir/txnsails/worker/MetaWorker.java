@@ -3,11 +3,14 @@ package org.dbiir.txnsails.worker;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import lombok.Getter;
+import lombok.Setter;
 import org.dbiir.txnsails.analysis.ChordAbsentCycleFinder;
+import org.dbiir.txnsails.analysis.SchemaInfo;
 import org.dbiir.txnsails.common.*;
 import org.dbiir.txnsails.common.constants.SmallBankConstants;
 import org.dbiir.txnsails.common.constants.TPCCConstants;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
+import org.dbiir.txnsails.common.types.DependencyType;
 
 public class MetaWorker {
   @Getter private static MetaWorker INSTANCE = new MetaWorker();
@@ -15,7 +18,8 @@ public class MetaWorker {
   private StaticDependencyGraph sdg = new StaticDependencyGraph();
   private AtomicInteger globalTransactionGenerator;
   private int globalTemplateTypeGenerator;
-  private HashMap<String, Integer> relationEncodeMap = new HashMap<>();
+  private final HashMap<String, Integer> relationEncodeMap = new HashMap<>();
+  @Getter @Setter private SchemaInfo schema;
 
   public MetaWorker() {
     globalTemplateTypeGenerator = 1;

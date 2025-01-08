@@ -4,7 +4,7 @@ import java.io.*;
 import java.net.Socket;
 import lombok.Setter;
 import lombok.SneakyThrows;
-import org.dbiir.txnsails.common.CCType;
+import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.execution.validation.TransactionCollector;
 
 public class Flusher implements Runnable {

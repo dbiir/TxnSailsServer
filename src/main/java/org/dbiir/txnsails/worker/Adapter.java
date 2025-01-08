@@ -6,7 +6,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import lombok.Getter;
 import lombok.Setter;
-import org.dbiir.txnsails.common.CCType;
+import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
 
 public class Adapter {

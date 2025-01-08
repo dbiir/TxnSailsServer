@@ -1,4 +1,4 @@
-package org.dbiir.txnsails.common;
+package org.dbiir.txnsails.common.types;
 
 public enum DependencyType {
   READ_WRITE("RW Dependency"),

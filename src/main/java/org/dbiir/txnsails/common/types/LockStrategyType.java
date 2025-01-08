@@ -1,4 +1,4 @@
-package org.dbiir.txnsails.common;
+package org.dbiir.txnsails.common.types;
 
 public enum LockStrategyType {
   NO_WAIT("No wait"),

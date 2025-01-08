@@ -2,6 +2,7 @@ package org.dbiir.txnsails.common;
 
 import lombok.Getter;
 import lombok.Setter;
+import org.dbiir.txnsails.common.types.DependencyType;
 
 @Getter
 public class StaticDependencyGraphEdge {

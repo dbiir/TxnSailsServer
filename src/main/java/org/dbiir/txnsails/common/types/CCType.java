@@ -1,4 +1,4 @@
-package org.dbiir.txnsails.common;
+package org.dbiir.txnsails.common.types;
 
 import java.util.EnumSet;
 import java.util.HashMap;

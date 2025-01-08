@@ -1,6 +1,7 @@
 package org.dbiir.txnsails.common;
 
 import lombok.Getter;
+import org.dbiir.txnsails.common.types.CCType;
 
 public class TransactionTemplate implements Cloneable {
   @Getter private final String name;
@@ -54,7 +55,7 @@ public class TransactionTemplate implements Cloneable {
   }
 
   public String getRelationByIndex(int idx) {
-    return sqls[idx].getRelation();
+    return sqls[idx].getTable();
   }
 
   public void setSQLRewriteByIndex(int idx, String isolation) {
@@ -81,7 +82,7 @@ public class TransactionTemplate implements Cloneable {
       //            clone.sqls = new TemplateSQL[15];
       for (int i = 0; i < sql_idx_in_template; i++) {
         if (sqls[i] != null) {
-          clone.sqls[i] = (TemplateSQL) sqls[i].clone();
+          clone.sqls[i] = sqls[i].clone();
         }
       }
       return clone;

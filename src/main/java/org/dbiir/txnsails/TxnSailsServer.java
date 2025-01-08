@@ -1,16 +1,5 @@
 package org.dbiir.txnsails;
 
-import com.fasterxml.jackson.dataformat.xml.XmlMapper;
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.codec.LengthFieldPrepender;
-import io.netty.handler.codec.string.StringDecoder;
-import io.netty.handler.codec.string.StringEncoder;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -27,16 +16,35 @@ import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.lang3.StringUtils;
-import org.dbiir.txnsails.common.CCType;
-import org.dbiir.txnsails.common.DatabaseType;
+import org.dbiir.txnsails.analysis.SchemaInfo;
 import org.dbiir.txnsails.common.JacksonXmlConfiguration;
+import org.dbiir.txnsails.common.types.CCType;
+import org.dbiir.txnsails.common.types.DatabaseType;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
 import org.dbiir.txnsails.execution.utils.FileUtil;
 import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
 import org.dbiir.txnsails.worker.Flusher;
+import org.dbiir.txnsails.worker.MetaWorker;
 import org.dbiir.txnsails.worker.OfflineWorker;
 import org.dbiir.txnsails.worker.OnlineWorker;
 
+
+import com.fasterxml.jackson.dataformat.xml.XmlMapper;
+
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.codec.string.StringDecoder;
+import io.netty.handler.codec.string.StringEncoder;
 public class TxnSailsServer {
   private static int DEFAULT_AUXILIARY_THREAD_NUM = 16; // used for
   private static Thread flushThread;
@@ -48,21 +56,25 @@ public class TxnSailsServer {
         new Options()
             .addOption("c", "config", true, "[required] Workload configuration file")
             .addOption("d", "directory", true, "Base directory for the meta files")
-            .addOption("p", "phase", true, "Online predict or offline training");
+                .addOption("s", "schema", true, "Base directory for the schema sql files")
+                .addOption("p", "phase", true, "Online predict or offline training");
 
     CommandLine argsLine = parser.parse(options, args);
 
-    String configFile = argsLine.getOptionValue("c").trim();
+    String schemaFile = argsLine.getOptionValue("s").trim();
+    MetaWorker.getINSTANCE().setSchema(new SchemaInfo(schemaFile));
 
+    String configFile = argsLine.getOptionValue("c").trim();
     JacksonXmlConfiguration xmlConfig = buildConfiguration(configFile);
+
     AtomicInteger genWorkerId = new AtomicInteger(0);
     WorkloadConfiguration workloadConfiguration = loadConfiguration(xmlConfig);
     List<Connection> auxiliaryConnectionList = makeAuxiliaryConnections(workloadConfiguration);
     ValidationMetaTable.getInstance()
         .initHotspot(workloadConfiguration.getBenchmarkName(), auxiliaryConnectionList);
-
     EventLoopGroup bossGroup = new NioEventLoopGroup();
     EventLoopGroup workerGroup = new NioEventLoopGroup();
+
     try {
       createFlushThread(argsLine, workloadConfiguration.getBenchmarkName(), workloadConfiguration.getConcurrencyControlType());
       System.out.println("Create Flush Thread");
@@ -187,8 +199,7 @@ public class TxnSailsServer {
         "ERROR#{0}#{1}#{2}"; // reason, SQLState, vendorCode
 
     private ServerHandler(WorkloadConfiguration configuration, int id) {
-      this.onlineWorker = new ThreadLocal<>();
-      this.onlineWorker.set(new OnlineWorker(configuration, id));
+      this.onlineWorker = ThreadLocal.withInitial(() -> new OnlineWorker(configuration, id));
     }
 
     @Override
@@ -205,45 +216,40 @@ public class TxnSailsServer {
 
       String response;
       switch (functionName) {
-        case "execute":
+        case "execute" -> {
           try {
             response = onlineWorker.get().execute(args);
+            response = "OK#" + response;
           } catch (SQLException ex) {
             // wrap error message
-            response =
-                MessageFormat.format(
-                    ERROR_FORMATTER, ex.getMessage(), ex.getSQLState(), ex.getErrorCode());
+            response = MessageFormat.format(ERROR_FORMATTER, ex.getMessage(), ex.getSQLState(), ex.getErrorCode());
           }
-          break;
-        // control command
-        case "commit":
+        }
+        case "commit" -> {
           try {
             onlineWorker.get().commit();
             response = "OK";
           } catch (SQLException ex) {
             // wrap error message
-            response =
-                MessageFormat.format(
+            response = MessageFormat.format(
                     ERROR_FORMATTER, ex.getMessage(), ex.getSQLState(), ex.getErrorCode());
           }
-          break;
-        case "rollback":
+        }
+        case "rollback" -> {
           try {
             onlineWorker.get().rollback();
             response = "OK";
           } catch (SQLException ex) {
             // wrap error message
-            response =
-                MessageFormat.format(
+            response = MessageFormat.format(
                     ERROR_FORMATTER, ex.getMessage(), ex.getSQLState(), ex.getErrorCode());
           }
-          break;
-        // TODO: remove register_begin and register_end
-        case "register_begin":
+        }
+        case "register_begin" -> {
           response = "OK";
           OfflineWorker.getINSTANCE().register_begin(args);
-          break;
-        case "register":
+        }
+        case "register" -> {
           if (args.length < 4) {
             response = "FAILED";
             break;
@@ -254,17 +260,14 @@ public class TxnSailsServer {
             break;
           }
           response = "OK#" + idx; // response with the unique sql index in server-side
-          break;
-        case "register_end":
-        case "analysis":
+        }
+        case "register_end", "analysis" -> {
           response = "OK";
           OfflineWorker.getINSTANCE().register_end(args);
-          break;
-        // add more function apis as needed
-        default:
-          response = "Unknown function: " + functionName;
+        }
+        default -> response = "Unknown function: " + functionName;
       }
-//      System.out.println(response);
+      // control command
       ByteBuf resp = ctx.alloc().buffer(response.length());
       resp.writeBytes(response.getBytes(StandardCharsets.UTF_8));
       ctx.writeAndFlush(resp).sync();
@@ -272,6 +275,7 @@ public class TxnSailsServer {
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+      cause.printStackTrace();
       ctx.close();
     }
   }

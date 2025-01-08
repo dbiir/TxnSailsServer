@@ -4,7 +4,7 @@ import java.util.HashMap;
 import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
-import org.dbiir.txnsails.common.ConditionInfo;
+import org.dbiir.txnsails.analysis.ConditionInfo;
 import org.dbiir.txnsails.common.TemplateSQL;
 import org.dbiir.txnsails.common.constants.SmallBankConstants;
 import org.dbiir.txnsails.common.constants.TPCCConstants;
@@ -43,13 +43,13 @@ public class ValidationMeta {
     switch (ValidationMetaTable.getInstance().getWorkload()) {
       case "smallbank":
         idForValidation =
-            SmallBankConstants.calculateUniqueId(uniqueKeys, templateSQL.getRelation());
+            SmallBankConstants.calculateUniqueId(uniqueKeys, templateSQL.getTable());
         break;
       case "tpcc":
-        idForValidation = TPCCConstants.calculateUniqueId(uniqueKeys, templateSQL.getRelation());
+        idForValidation = TPCCConstants.calculateUniqueId(uniqueKeys, templateSQL.getTable());
         break;
       case "ycsb":
-        idForValidation = YCSBConstants.calculateUniqueId(uniqueKeys, templateSQL.getRelation());
+        idForValidation = YCSBConstants.calculateUniqueId(uniqueKeys, templateSQL.getTable());
         break;
       case "unknown benchmark":
         break;

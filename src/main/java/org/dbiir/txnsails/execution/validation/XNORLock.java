@@ -7,8 +7,8 @@ import java.util.List;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import lombok.Getter;
-import org.dbiir.txnsails.common.LockStrategyType;
-import org.dbiir.txnsails.common.LockType;
+import org.dbiir.txnsails.common.types.LockStrategyType;
+import org.dbiir.txnsails.common.types.LockType;
 
 public class XNORLock {
   private LockType type;

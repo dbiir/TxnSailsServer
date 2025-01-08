@@ -3,8 +3,8 @@ package org.dbiir.txnsails.execution.validation;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import lombok.Getter;
-import org.dbiir.txnsails.common.CCType;
-import org.dbiir.txnsails.common.LockType;
+import org.dbiir.txnsails.common.types.CCType;
+import org.dbiir.txnsails.common.types.LockType;
 
 public class ValidationLock {
   private LockType type; // SH for read validation, EX for write commit check

@@ -2,7 +2,7 @@ package org.dbiir.txnsails.execution.validation;
 
 import lombok.Getter;
 import lombok.Setter;
-import org.dbiir.txnsails.common.LockType;
+import org.dbiir.txnsails.common.types.LockType;
 
 @Getter
 @Setter

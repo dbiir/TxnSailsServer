@@ -19,6 +19,7 @@ import net.sf.jsqlparser.statement.select.Select;
 import net.sf.jsqlparser.statement.select.SelectExpressionItem;
 import net.sf.jsqlparser.statement.select.SelectItem;
 import net.sf.jsqlparser.statement.update.*;
+import org.dbiir.txnsails.analysis.ConditionInfo;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
 
 @Getter
@@ -26,7 +27,7 @@ public class TemplateSQL implements Cloneable {
   private final int op; // 0 for read, 1 for write, 2 for scan
   private final String originSQL;
   private String rewriteSQL;
-  private final String relation;
+  private final String table; // join operation in future
   @Setter private boolean skip;
   private boolean needRewriteUnderSI;
   private boolean needRewriteUnderRC;
@@ -34,21 +35,23 @@ public class TemplateSQL implements Cloneable {
   private int uniqueKeyNumber;
   @Setter @Getter private List<Column> columnList;
   @Getter private List<ConditionInfo> wherePlaceholders;
+  @Getter private List<ConditionInfo> allPlaceholders;
 
-  public TemplateSQL(int op, String relation, String sql) {
+  public TemplateSQL(int op, String table, String sql) {
     this.op = op;
     this.originSQL = sql;
-    this.relation = relation;
-    this.columnList = null;
+    this.table = table;
+    this.columnList = new ArrayList<>(4);
     this.needRewriteUnderSI = false;
     this.needRewriteUnderRC = false;
     this.skip = false;
     this.uniqueKeyIndexList = new ArrayList<>(4);
     this.rewriteSQL = "";
     this.wherePlaceholders = new ArrayList<>();
+    this.allPlaceholders = new ArrayList<>();
 
     // find the placeholders in the where clause
-    findWherePlaceholders();
+    findJdbcParameters();
   }
 
   public void addUniqueKeyIndex(int idx) {
@@ -67,10 +70,11 @@ public class TemplateSQL implements Cloneable {
   }
 
   private void rewrite() {
+    if (!rewriteSQL.isEmpty()) return;
     if (identifySQLType(originSQL) == 1) {
-      this.rewriteSQL = modifyUpdateQuery(originSQL, columnList);
+      this.rewriteSQL = modifyUpdateQuery();
     } else if (identifySQLType(originSQL) == 0) {
-      this.rewriteSQL = modifySelectQuery(originSQL, columnList);
+      this.rewriteSQL = modifySelectQuery();
     } else {
       this.rewriteSQL = "";
     }
@@ -104,11 +108,11 @@ public class TemplateSQL implements Cloneable {
   }
 
   // Method: Add the field "vid" to the SELECT statement and ensure it is added at the end
-  private String modifySelectQuery(String sql, List<Column> columnList) {
+  private String modifySelectQuery() {
     try {
       // Parse the original SELECT statement
       CCJSqlParserManager parserManager = new CCJSqlParserManager();
-      Select selectStatement = (Select) parserManager.parse(new StringReader(sql));
+      Select selectStatement = (Select) parserManager.parse(new StringReader(originSQL));
 
       // Get the SELECT body, which is the part containing the fields
       PlainSelect plainSelect = (PlainSelect) selectStatement.getSelectBody();
@@ -152,11 +156,11 @@ public class TemplateSQL implements Cloneable {
   }
 
   // Method: Modify the SQL statement to add the "vid" field and return it
-  private String modifyUpdateQuery(String sql, List<Column> columnList) {
+  private String modifyUpdateQuery() {
     try {
       // Parse the SQL statement
       CCJSqlParserManager parserManager = new CCJSqlParserManager();
-      Update updateStatement = (Update) parserManager.parse(new StringReader(sql));
+      Update updateStatement = (Update) parserManager.parse(new StringReader(originSQL));
 
       // Create the expression "vid = vid + 1"
       Column vidColumn = new Column("vid");
@@ -168,15 +172,15 @@ public class TemplateSQL implements Cloneable {
 
       // Add the SetExpression to the UPDATE statement
       updateStatement
-          .getExpressions()
-          .add(versionExpression); // Add "vid = vid + 1" to the SET clause
+          .getUpdateSets()
+          .add(new UpdateSet(vidColumn, addExpression)); // Add "vid = vid + 1" to the SET clause
 
       // Manually add the RETURNING clause, since JSQLParser does not support it directly
-      String returningClause = " RETURNING vid";
+      updateStatement.setReturningExpressionList(List.of(new SelectExpressionItem(new Column("vid"))));
       columnList.add(new Column("vid"));
 
       // Return the modified SQL statement
-      return updateStatement.toString() + returningClause;
+      return updateStatement.toString();
 
     } catch (Exception e) {
       e.printStackTrace();
@@ -192,6 +196,7 @@ public class TemplateSQL implements Cloneable {
       CCJSqlParserManager parserManager = new CCJSqlParserManager();
 
       // Parse the SQL statement
+      System.out.println("sql: " + sql);
       Statement statement = parserManager.parse(new StringReader(sql));
 
       // Check the type of SQL statement
@@ -211,14 +216,11 @@ public class TemplateSQL implements Cloneable {
 
   private void findWherePlaceholders() {
     try {
-      analyseTemplate();
       Statement statement = CCJSqlParserUtil.parse(originSQL);
-      if (statement instanceof Update) {
-        Update updateStatement = (Update) statement;
+      if (statement instanceof Update updateStatement) {
         Expression where = updateStatement.getWhere();
         findConditions(where);
-      } else if (statement instanceof Select) {
-        Select selectStatement = (Select) statement;
+      } else if (statement instanceof Select selectStatement) {
         PlainSelect plainSelect = (PlainSelect) selectStatement.getSelectBody();
         Expression where = plainSelect.getWhere();
         findConditions(where);
@@ -260,9 +262,78 @@ public class TemplateSQL implements Cloneable {
 
   // specific for YCSB workload
   private void analyseTemplate() {
-    if (this.relation.equals(YCSBConstants.TABLE_NAME)) {
+    if (this.table.equals(YCSBConstants.TABLE_NAME)) {
       this.needRewriteUnderRC = true;
       this.needRewriteUnderSI = true;
+      rewrite();
+    }
+  }
+
+  private void findJdbcParameters() {
+    try {
+      Statement statement = CCJSqlParserUtil.parse(originSQL);
+      analyseTemplate();
+
+      if (statement instanceof Select select) {
+        PlainSelect plainSelect = (PlainSelect) select.getSelectBody();
+        List<SelectItem> selectItems = plainSelect.getSelectItems();
+
+        for (SelectItem item : selectItems) {
+          if (item instanceof SelectExpressionItem selectExpressionItem) {
+            if (selectExpressionItem.getExpression() instanceof JdbcParameter) {
+              System.out.println("Not support jdbc parameters in selected attributes");
+            }
+          }
+        }
+
+        // Check WHERE clause
+        Expression where = plainSelect.getWhere();
+        if (where != null) {
+          findJdbcParametersInWhere(where);
+        }
+
+      } else if (statement instanceof Update update) {
+        List<UpdateSet> updateSets = update.getUpdateSets();
+
+        for (UpdateSet updateSet : updateSets) {
+          List<Column> columns = updateSet.getColumns();
+          for (Column column : columns) {
+            if (updateSet.getExpressions().get(columns.indexOf(column)) instanceof JdbcParameter param1) {
+              allPlaceholders.add(new ConditionInfo(column, param1));
+            }
+          }
+        }
+
+        // Check WHERE clause
+        Expression where = update.getWhere();
+        if (where != null) {
+          findJdbcParametersInWhere(where);
+        }
+      }
+    } catch (Exception e) {
+      System.out.println("originSQL: " + originSQL);
+      e.printStackTrace();
+    }
+  }
+
+  private void findJdbcParametersInWhere(Expression where) {
+    if (where instanceof BinaryExpression binaryExpression) {
+      Expression leftExpression = binaryExpression.getLeftExpression();
+      Expression rightExpression = binaryExpression.getRightExpression();
+
+      if (rightExpression instanceof JdbcParameter param1 && leftExpression instanceof Column column1) {
+        // TODO:
+        allPlaceholders.add(new ConditionInfo(column1, param1));
+        wherePlaceholders.add(new ConditionInfo(column1, param1));
+      }
+      if (rightExpression instanceof Column column2 && leftExpression instanceof JdbcParameter param2) {
+        allPlaceholders.add(new ConditionInfo(column2, param2));
+        wherePlaceholders.add(new ConditionInfo(column2, param2));
+      }
+
+      // Recursively check nested expressions
+      findJdbcParametersInWhere(leftExpression);
+      findJdbcParametersInWhere(rightExpression);
     }
   }
 

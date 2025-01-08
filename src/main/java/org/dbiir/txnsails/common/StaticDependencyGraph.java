@@ -5,6 +5,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import lombok.Getter;
+import org.dbiir.txnsails.common.types.DependencyType;
 
 public class StaticDependencyGraph {
   @Getter private HashMap<TransactionTemplate, List<StaticDependencyGraphEdge>> adjacencyList;
@@ -44,6 +45,7 @@ public class StaticDependencyGraph {
     edge.setIdxInFrom(idxInFrom);
     edge.setIdxInTo(idxInTo);
     adjacencyList.get(from).add(edge);
+    System.out.println("Edge: {Type: " + type + ", From: " + from.getName() + ", To: " + to.getName() + "}");
   }
 
   public List<StaticDependencyGraphEdge> getDependencies(TransactionTemplate template) {

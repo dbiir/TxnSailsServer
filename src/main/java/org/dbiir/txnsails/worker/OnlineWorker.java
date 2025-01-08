@@ -7,7 +7,12 @@ import lombok.Getter;
 import lombok.Setter;
 import net.sf.jsqlparser.schema.Column;
 import org.apache.commons.lang3.StringUtils;
+import org.dbiir.txnsails.analysis.ConditionInfo;
+import org.dbiir.txnsails.analysis.SchemaInfo;
 import org.dbiir.txnsails.common.*;
+import org.dbiir.txnsails.common.types.CCType;
+import org.dbiir.txnsails.common.types.ColumnType;
+import org.dbiir.txnsails.common.types.LockType;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
 import org.dbiir.txnsails.execution.utils.RWRecord;
 import org.dbiir.txnsails.execution.utils.SQLStmt;
@@ -45,6 +50,7 @@ public class OnlineWorker {
   private final List<RWRecord> writeSet;
   private ValidationMeta sampleMeta = new ValidationMeta();
   private CCType lockManner = CCType.NUM_CC;
+  private final SchemaInfo schema;
 
   public OnlineWorker(WorkloadConfiguration configuration, int id) {
     this.configuration = configuration;
@@ -54,16 +60,9 @@ public class OnlineWorker {
       this.conn = makeConnection();
       this.conn.setAutoCommit(false);
       switch (ccType) {
-        case RC:
-        case RC_TAILOR:
-          this.conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
-          break;
-        case SI:
-        case SI_TAILOR:
-          this.conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
-          break;
-        case SER:
-          this.conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+        case RC, RC_TAILOR -> this.conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+        case SI, SI_TAILOR -> this.conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+        case SER -> this.conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
       }
       // read the lasted version
       this.conn2 = makeConnection();
@@ -85,6 +84,8 @@ public class OnlineWorker {
     // init sample container
     this.readSet = new ArrayList<>(8);
     this.writeSet = new ArrayList<>(8);
+    // fetch the schema
+    this.schema = MetaWorker.getINSTANCE().getSchema();
     // register self into AdapterWorker
     Adapter.getInstance().addOnlineWorker(this);
   }
@@ -132,7 +133,7 @@ public class OnlineWorker {
         if (shouldSample) {
           addSampleMeta(
               templateSQL.getOp(),
-              MetaWorker.getINSTANCE().getRelationType(templateSQL.getRelation()),
+              MetaWorker.getINSTANCE().getRelationType(templateSQL.getTable()),
               meta.getIdForValidation());
         }
         if (templateSQL.isNeedRewriteUnderRC()) {
@@ -146,11 +147,11 @@ public class OnlineWorker {
         throw new SQLException("Not enough arguments!");
       }
     }
-    String rewrite_sql = templates.get(args[0]).getSQLByIndex(Integer.parseInt(args[1]), ccType);
-    // TODO: execute the sql
+    String rewrite_sql = templateSQL.getRewriteSQL();
+    System.out.println("rewrite sql: " + rewrite_sql);
+    // execute the sql
     try (PreparedStatement stmtc =
-        this.getPreparedStatement(
-            conn, new SQLStmt(rewrite_sql), Arrays.copyOfRange(args, 1, args.length))) {
+        this.getPreparedStatement(conn, new SQLStmt(rewrite_sql), args, templateSQL)) {
       try (ResultSet rs = stmtc.executeQuery()) {
         int v = -1;
         List<List<String>> rows = new ArrayList<>(2);
@@ -164,6 +165,7 @@ public class OnlineWorker {
               row.add(rs.getString(columnName));
             }
           }
+          rows.add(row);
         }
         // parse and wrap the results
         results.append(wrapResults(rows));
@@ -259,7 +261,7 @@ public class OnlineWorker {
         LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
         ValidationMetaTable.getInstance()
             .tryValidationLock(
-                templateSQL.getRelation(),
+                templateSQL.getTable(),
                 this.transactionId,
                 validationMeta.getIdForValidation(),
                 lockType,
@@ -273,7 +275,7 @@ public class OnlineWorker {
         LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
         ValidationMetaTable.getInstance()
             .tryValidationLock(
-                templateSQL.getRelation(),
+                templateSQL.getTable(),
                 this.transactionId,
                 validationMeta.getIdForValidation(),
                 lockType,
@@ -298,20 +300,20 @@ public class OnlineWorker {
     long v =
         ValidationMetaTable.getInstance()
             .getHotspotVersion(
-                meta.getTemplateSQL().getRelation(), (long) meta.getIdForValidation());
+                meta.getTemplateSQL().getTable(), (long) meta.getIdForValidation());
     if (v >= 0) {
       if (v != meta.getOldVersions()) {
         String msg =
             String.format(
                 "Validation failed for key #%d, %s",
-                meta.getIdForValidation(), meta.getTemplateSQL().getRelation());
+                meta.getIdForValidation(), meta.getTemplateSQL().getTable());
         throw new SQLException(msg, "500");
       }
     } else {
       v =
           ValidationMetaTable.getInstance()
               .fetchUnknownVersionCache(
-                  meta.getTemplateSQL().getRelation(), meta.getIdForValidation());
+                  meta.getTemplateSQL().getTable(), meta.getIdForValidation());
       if (v != meta.getOldVersions()) {
         //          releaseValidationLocks(false);
         String msg =
@@ -355,12 +357,12 @@ public class OnlineWorker {
     TemplateSQL templateSQL = meta.getTemplateSQL();
     LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
     ValidationMetaTable.getInstance()
-        .releaseValidationLock(templateSQL.getRelation(), meta.getIdForValidation(), lockType);
+        .releaseValidationLock(templateSQL.getTable(), meta.getIdForValidation(), lockType);
     if (success && lockType == LockType.EX) {
       // update the hot version cache (HVC) if the entry is cached in memory
       ValidationMetaTable.getInstance()
           .updateHotspotVersion(
-              templateSQL.getRelation(), meta.getIdForValidation(), meta.getOldVersions() + 1);
+              templateSQL.getTable(), meta.getIdForValidation(), meta.getOldVersions() + 1);
     }
     meta.setLocked(false);
     meta.clearInfo();
@@ -398,17 +400,9 @@ public class OnlineWorker {
       this.ccType = Adapter.getInstance().getNextCCType();
 
       switch (this.ccType) {
-        case RC:
-        case RC_TAILOR:
-          conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
-          break;
-        case SI:
-        case SI_TAILOR:
-          conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
-          break;
-        case SER:
-        case SER_TRANSITION:
-          conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+        case RC, RC_TAILOR -> conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+        case SI, SI_TAILOR -> conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+        case SER, SER_TRANSITION -> conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
       }
       if (this.ccType == CCType.SER) {
         this.ccType = CCType.SER_TRANSITION;
@@ -434,14 +428,31 @@ public class OnlineWorker {
    * @param conn
    * @param stmt
    * @param params: just support String, maybe provide more types in the future
+   * @param templateSQL
    * @return
    * @throws SQLException
    */
   private final PreparedStatement getPreparedStatement(
-      Connection conn, SQLStmt stmt, String[] params) throws SQLException {
+      Connection conn, SQLStmt stmt, String[] params, TemplateSQL templateSQL) throws SQLException {
     PreparedStatement pStmt = conn.prepareStatement(stmt.getSQL());
-    for (int i = 0; i < params.length; i++) {
-      pStmt.setObject(i + 1, params[i]);
+    if (params.length - 2 != templateSQL.getAllPlaceholders().size()) {
+      String msg = "The length of parameters and placeholders are not matching";
+      System.out.println(msg);
+      throw new SQLException(msg);
+    }
+    List<ConditionInfo> phList = templateSQL.getAllPlaceholders();
+    for (int i = 2; i < params.length; i++) {
+      // rewrite by the type of the params
+      ColumnType columnType = schema.getColumnTypeByName(templateSQL.getTable(), phList.get(i - 2).getColumnName());
+      switch (columnType) {
+          case INTEGER -> pStmt.setObject(i - 1, Integer.valueOf(params[i]));
+          case BIGINT -> pStmt.setObject(i - 1, Long.valueOf(params[i]));
+          case FLOAT -> pStmt.setObject(i - 1, Float.valueOf(params[i]));
+          case VARCHAR, TEXT -> pStmt.setObject(i - 1, params[i]);
+          case DOUBLE -> pStmt.setObject(i - 1, Double.valueOf(params[i]));
+          case BOOLEAN -> pStmt.setObject(i - 1, Boolean.valueOf(params[i]));
+          default -> throw new AssertionError();
+      }
     }
     return (pStmt);
   }
@@ -450,13 +461,11 @@ public class OnlineWorker {
     StringBuilder sb = new StringBuilder();
 
     for (List<String> row : rows) {
-      sb.append(String.format("%02x", row.size()));
+      sb.append(String.format("%02x", row.size()));   // record the column size in this row
       for (String col : row) {
-        // record the string length in 2 bytes
-        byte[] lengthBytes = ByteBuffer.allocate(2).putShort((short) col.length()).array();
-        for (byte b : lengthBytes) {
-          sb.append(String.format("%02x", b));
-        }
+        // record the string length in 4 bytes
+//        System.out.println("col.length() = " + col.length());
+        sb.append(String.format("%04x", col.length()));
         sb.append(col); // wrap column value
       }
     }
@@ -479,12 +488,12 @@ public class OnlineWorker {
         int length = Integer.parseInt(lengthHex, 16);
         index += 4;
 
-        String value = results.substring(index, index + length); // 根据长度提取值
-        index += length; // 移动到下一个位置
+        String value = results.substring(index, index + length); 
+        index += length; // move to the next
 
         row.add(value);
       }
-      rows.add(row); // 将当前行的 Pair 添加到总列表中
+      rows.add(row); // add row
     }
 
     return rows;
