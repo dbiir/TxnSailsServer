@@ -280,7 +280,8 @@ public class ValidationMetaTable {
 
     // gc: shrink the validation lock list
     if (validationBucketLocks.get(table)[bucketNum].writeLock().tryLock()) {
-      lockList.removeIf(lock -> lock.getId() > getHashSizeByRelationName(table) && lock.free());
+      lockList.removeIf(lock -> lock.isExpired() && lock.getId() > getHashSizeByRelationName(table)
+              && lock.free());
       validationBucketLocks.get(table)[bucketNum].writeLock().unlock();
     }
   }

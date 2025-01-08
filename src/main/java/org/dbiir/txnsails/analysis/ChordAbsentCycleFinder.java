@@ -12,22 +12,6 @@ public class ChordAbsentCycleFinder {
     this.graph = graph;
   }
 
-  public Set<List<String>> verboseAllCycles() {
-    Set<List<String>> cycles = new HashSet<>();
-    Set<TransactionTemplate> visited = new HashSet<>();
-    Set<TransactionTemplate> stack = new HashSet<>();
-
-    for (TransactionTemplate node : graph.keySet()) {
-      //            if (!visited.contains(node)) {
-      visited = new HashSet<>();
-      dfs_verbose(
-          node, visited, stack, new ArrayList<>(), cycles, new HashSet<>(), new ArrayList<>());
-      //            }
-    }
-
-    return cycles;
-  }
-
   public Set<StaticDependencyCycle> findAllCycles() {
     Set<StaticDependencyCycle> cycles = new HashSet<>();
     Set<TransactionTemplate> visited = new HashSet<>();
@@ -38,57 +22,6 @@ public class ChordAbsentCycleFinder {
     }
 
     return cycles;
-  }
-
-  private void dfs_verbose(
-      TransactionTemplate node,
-      Set<TransactionTemplate> visited,
-      Set<TransactionTemplate> stack,
-      List<TransactionTemplate> path,
-      Set<List<String>> cycles,
-      Set<String> edgeNames,
-      List<String> pathDetails) {
-    visited.add(node);
-    stack.add(node);
-    path.add(node);
-
-    for (StaticDependencyGraphEdge edge : graph.getOrDefault(node, Collections.emptyList())) {
-      TransactionTemplate neighbor = edge.getTo();
-      String edgeName = edge.getEdgeName();
-
-      //            pathDetails.add(node.getName() + " --(" + edge.getType() + "," +
-      // edge.getEdgeName() + ")--> " + neighbor.getName());
-      pathDetails.add(node.getName() + " --(" + edge.getType() + ")--> " + neighbor.getName());
-
-      if (!visited.contains(neighbor)) {
-        edgeNames.add(edgeName); // add the edge name
-        dfs_verbose(neighbor, visited, stack, path, cycles, edgeNames, pathDetails);
-        edgeNames.remove(edgeName); // remove the edge name when backtracking
-      } else if (stack.contains(neighbor) && !edgeNames.contains(edgeName)) {
-        // find a cycle without nodes with the same edgeName
-        int index = path.indexOf(neighbor);
-        path.add(neighbor);
-        //                List<TransactionTemplate> cycle = new ArrayList<>(path.subList(index,
-        // path.size()));
-        List<TransactionTemplate> cycle = new ArrayList<>(path);
-
-        edgeNames.add(edgeName);
-        if (isSimpleCycle(cycle, edgeNames)) {
-          // print the cycle
-          System.out.println("Found cycle: " + pathDetails);
-          cycles.add(new ArrayList<>(pathDetails));
-        }
-        edgeNames.remove(edgeName);
-        path.remove(path.size() - 1);
-      }
-
-      // remove the last path detail
-      pathDetails.remove(pathDetails.size() - 1);
-    }
-
-    visited.remove(node);
-    stack.remove(node);
-    path.remove(path.size() - 1);
   }
 
   private void dfs(
@@ -142,6 +75,7 @@ public class ChordAbsentCycleFinder {
     if (!head.getName().equals(tail.getName())) return false;
     // check the chord
     Set<TransactionTemplate> cycleSet = new HashSet<>(cycle);
+    if (cycleSet.size() == 2) return true;
     for (TransactionTemplate node : cycle.subList(0, cycle.size() - 2)) {
       for (StaticDependencyGraphEdge edge : graph.getOrDefault(node, Collections.emptyList())) {
         String edgeName = edge.getEdgeName();

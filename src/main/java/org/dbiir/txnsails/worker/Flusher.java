@@ -18,6 +18,7 @@ public class Flusher implements Runnable {
   private CCType ccType;
   private final boolean online;
   private final Socket socket;
+  private boolean use = false;
 
   public Flusher(String workload, String prefix, CCType ccType, boolean online) {
     try {
@@ -25,8 +26,10 @@ public class Flusher implements Runnable {
       this.outputFilePrefix = prefix;
       this.ccType = ccType;
       this.online = online;
-      if (online) this.socket = new Socket(ip, port);
-      else this.socket = new Socket();
+      if (use && online)
+        this.socket = new Socket(ip, port);
+      else
+        this.socket = new Socket();
     } catch (IOException e) {
       throw new RuntimeException(e);
     }

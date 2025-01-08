@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -116,6 +117,19 @@ public class SchemaInfo {
     for (TableInfo table : tables) {
       if (table.getTableName().equalsIgnoreCase(tableName)) {
         return table.findColumnType(colName);
+      }
+    }
+    return null;
+  }
+
+  public List<ColumnInfo> getColumnInfoByTableName(String tableName) {
+    List<ColumnInfo> res = new ArrayList<>();
+    for (TableInfo table : tables) {
+      if (table.getTableName().equalsIgnoreCase(tableName)) {
+        for (Map.Entry<String, ColumnInfo> entry : table.getColumns().entrySet()) {
+          res.add(entry.getValue());
+        }
+        return res;
       }
     }
     return null;

@@ -7,26 +7,35 @@ import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.common.types.LockType;
 
 public class ValidationLock {
+  private static final long EXPIRED_SPAN = 1000;  // the expired span is 1s
   private LockType type; // SH for read validation, EX for write commit check
   private final Lock lock;
   private int count;
   private long maxTid;
-  private long maxWriteWaitTid;
   private long minWriteWaitTid;
   private long minReadWaitTid;
   @Getter private final long id;
   @Getter long version;
+  private long lease;
 
   public ValidationLock(long id) {
     this.lock = new ReentrantLock();
     this.type = LockType.NoneType;
     this.count = 0;
     this.maxTid = 0;
-    this.maxWriteWaitTid = 0;
     this.minWriteWaitTid = 0;
     this.minReadWaitTid = 0;
     this.id = id;
     this.version = -1;
+    this.lease = System.currentTimeMillis() + EXPIRED_SPAN;
+  }
+
+  public synchronized void updateLease() {
+    lease = System.currentTimeMillis() + EXPIRED_SPAN;
+  }
+
+  public synchronized boolean isExpired() {
+    return System.currentTimeMillis() > lease;
   }
 
   public synchronized void updateVersion(long v) {
@@ -45,7 +54,6 @@ public class ValidationLock {
       count++;
       if (lockType == LockType.EX) {
         minWriteWaitTid = 0;
-        maxWriteWaitTid = 0;
       } else if (lockType == LockType.SH) {
         minReadWaitTid = 0;
       }

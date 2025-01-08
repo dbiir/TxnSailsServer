@@ -83,9 +83,9 @@ public abstract class SmallBankConstants {
   public static final double PARAM_WRITE_CHECK_AMOUNT = 5.0d;
 
   public static final String getSavingVersion =
-      "SELECT vid FROM " + TABLENAME_SAVINGS + " WHERE custid = %d";
+      "SELECT vid FROM " + TABLENAME_SAVINGS + " WHERE CUSTID = %d";
   public static final String getCheckingVersion =
-      "SELECT vid FROM " + TABLENAME_CHECKING + " WHERE custid = %d";
+      "SELECT vid FROM " + TABLENAME_CHECKING + " WHERE CUSTID = %d";
 
   public static int getHashSize(String tableName) {
     return TABLENAME_TO_HASH_SIZE.get(tableName);
@@ -95,14 +95,14 @@ public abstract class SmallBankConstants {
     int res = -1;
     switch (tableName) {
       case TABLENAME_ACCOUNTS:
-        if (keys.containsKey("custid")) {
-          res = keys.get("custid");
-        } else if (keys.containsKey("name")) {
-          res = keys.get("name");
+        if (keys.containsKey("CUSTID")) {
+          res = keys.get("CUSTID");
+        } else if (keys.containsKey("NAME")) {
+          res = keys.get("NAME");
         }
         break;
       case TABLENAME_CHECKING, TABLENAME_SAVINGS:
-        res = keys.get("custid");
+        res = keys.get("CUSTID");
         break;
       default:
         System.out.println("Unknown relation name: " + tableName);

@@ -27,7 +27,7 @@ public class ValidationMeta {
   private int idForValidation; // identification for validation (mod INT_MAX for hash value)
   // key -> int
   private HashMap<String, Integer> uniqueKeys = new HashMap<>(4);
-  private boolean isLocked = false;
+  private boolean locked = false;
 
   public void addRuntimeArgs(List<String> args) {
     List<ConditionInfo> whereConditionInfos = templateSQL.getWherePlaceholders();
@@ -60,7 +60,7 @@ public class ValidationMeta {
     oldVersions = -1;
     uniqueKeyNumber = 0;
     idForValidation = -1;
-    isLocked = false;
+    locked = false;
   }
 
   public void deepCopy(ValidationMeta other) {

@@ -147,11 +147,11 @@ public class OnlineWorker {
         throw new SQLException("Not enough arguments!");
       }
     }
-    String rewrite_sql = templateSQL.getRewriteSQL();
-    System.out.println("rewrite sql: " + rewrite_sql);
+
+    String executeSQL = templateSQL.getSQL();
     // execute the sql
     try (PreparedStatement stmtc =
-        this.getPreparedStatement(conn, new SQLStmt(rewrite_sql), args, templateSQL)) {
+        this.getPreparedStatement(conn, new SQLStmt(executeSQL), args, templateSQL)) {
       try (ResultSet rs = stmtc.executeQuery()) {
         int v = -1;
         List<List<String>> rows = new ArrayList<>(2);
@@ -171,13 +171,15 @@ public class OnlineWorker {
         results.append(wrapResults(rows));
         // record the version if it needs, support scan-based
         if (templateSQL.isNeedRewriteUnderRC()) {
-          validationMetaUnderSI[validationMetaIdxUnderSI - 1].setOldVersions(v);
+          validationMetaUnderRC[validationMetaIdxUnderRC - 1].setOldVersions(v);
           if (templateSQL.isNeedRewriteUnderSI()) {
-            validationMetaUnderRC[validationMetaIdxUnderRC - 1].setOldVersions(v);
+            validationMetaUnderSI[validationMetaIdxUnderSI - 1].setOldVersions(v);
           }
         }
       } catch (SQLException ex) {
         // check if the error can retry automatically, in the future
+        System.out.println("Error execute sql: " + executeSQL);
+        System.out.println(ex);
         throw ex;
       }
     }
@@ -237,16 +239,16 @@ public class OnlineWorker {
       if (!this.isSwitchPhaseReady()) {
         this.setSwitchPhaseReady(true);
         System.out.println(Thread.currentThread().getName() + " is ready for switch");
-        // cases: SER -> SI/RC
-        if (this.ccType == CCType.SER) {
-          this.ccType = CCType.SER_TRANSITION;
-        }
       } else {
         try {
           Thread.sleep(1);
         } catch (InterruptedException e) {
         }
       }
+    }
+    if (Adapter.getInstance().isInSwitchPhase() && this.ccType == CCType.SER) {
+      // cases: SER -> SI/RC, SI/RC -> SER
+      this.ccType = CCType.SER_TRANSITION;
     }
     if (!Adapter.getInstance().isInSwitchPhase() && this.ccType == CCType.SER_TRANSITION) {
       // cases: SI/RC -> SER
@@ -341,19 +343,42 @@ public class OnlineWorker {
     if (this.lockManner == CCType.RC_TAILOR) {
       for (int i = 0; i < validationMetaIdxUnderRC; i++) {
         ValidationMeta meta = validationMetaUnderRC[i];
-        if (!meta.isLocked()) continue;
+        if (!meta.isLocked()) {
+          if (success)
+            updateValidationVersion(meta);
+          continue;
+        }
         releaseSingleMeta(meta, success);
       }
     } else if (this.lockManner == CCType.SI_TAILOR) {
       for (int i = 0; i < validationMetaIdxUnderSI; i++) {
         ValidationMeta meta = validationMetaUnderSI[i];
-        if (!meta.isLocked()) continue;
+        if (!meta.isLocked()) {
+          if (success)
+            updateValidationVersion(meta);
+          continue;
+        }
         releaseSingleMeta(meta, success);
       }
     }
   }
 
+  private void updateValidationVersion(ValidationMeta meta) {
+    TemplateSQL templateSQL = meta.getTemplateSQL();
+    LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
+    if (lockType == LockType.EX) {
+      // update the hot version cache (HVC) if the entry is cached in memory
+      ValidationMetaTable.getInstance()
+              .updateHotspotVersion(
+                      templateSQL.getTable(), meta.getIdForValidation(), meta.getOldVersions() + 1);
+    }
+    meta.clearInfo();
+  }
+
   private void releaseSingleMeta(ValidationMeta meta, boolean success) {
+    if (!meta.isLocked()) {
+      System.out.println("Lock operation is failed, but previous validation successes");
+    }
     TemplateSQL templateSQL = meta.getTemplateSQL();
     LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
     ValidationMetaTable.getInstance()
@@ -437,7 +462,7 @@ public class OnlineWorker {
     PreparedStatement pStmt = conn.prepareStatement(stmt.getSQL());
     if (params.length - 2 != templateSQL.getAllPlaceholders().size()) {
       String msg = "The length of parameters and placeholders are not matching";
-      System.out.println(msg);
+      System.out.println(msg + "; params.length: " + params.length + " templateSQL: " + templateSQL.getAllPlaceholders().size());
       throw new SQLException(msg);
     }
     List<ConditionInfo> phList = templateSQL.getAllPlaceholders();

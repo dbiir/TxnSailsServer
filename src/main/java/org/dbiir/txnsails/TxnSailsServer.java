@@ -220,6 +220,7 @@ public class TxnSailsServer {
           try {
             response = onlineWorker.get().execute(args);
             response = "OK#" + response;
+            System.out.println("response: " + response);
           } catch (SQLException ex) {
             // wrap error message
             response = MessageFormat.format(ERROR_FORMATTER, ex.getMessage(), ex.getSQLState(), ex.getErrorCode());

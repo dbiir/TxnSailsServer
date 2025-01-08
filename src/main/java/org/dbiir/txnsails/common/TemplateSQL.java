@@ -2,7 +2,10 @@ package org.dbiir.txnsails.common;
 
 import java.io.StringReader;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
+
 import lombok.Getter;
 import lombok.Setter;
 import net.sf.jsqlparser.JSQLParserException;
@@ -14,13 +17,12 @@ import net.sf.jsqlparser.expression.operators.relational.*;
 import net.sf.jsqlparser.parser.*;
 import net.sf.jsqlparser.schema.*;
 import net.sf.jsqlparser.statement.*;
-import net.sf.jsqlparser.statement.select.PlainSelect;
-import net.sf.jsqlparser.statement.select.Select;
-import net.sf.jsqlparser.statement.select.SelectExpressionItem;
-import net.sf.jsqlparser.statement.select.SelectItem;
+import net.sf.jsqlparser.statement.select.*;
 import net.sf.jsqlparser.statement.update.*;
+import org.dbiir.txnsails.analysis.ColumnInfo;
 import org.dbiir.txnsails.analysis.ConditionInfo;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
+import org.dbiir.txnsails.worker.MetaWorker;
 
 @Getter
 public class TemplateSQL implements Cloneable {
@@ -36,6 +38,7 @@ public class TemplateSQL implements Cloneable {
   @Setter @Getter private List<Column> columnList;
   @Getter private List<ConditionInfo> wherePlaceholders;
   @Getter private List<ConditionInfo> allPlaceholders;
+  private boolean selectAllAttr;
 
   public TemplateSQL(int op, String table, String sql) {
     this.op = op;
@@ -49,9 +52,12 @@ public class TemplateSQL implements Cloneable {
     this.rewriteSQL = "";
     this.wherePlaceholders = new ArrayList<>();
     this.allPlaceholders = new ArrayList<>();
+    this.selectAllAttr = false;
 
-    // find the placeholders in the where clause
+    // find the placeholders in the clause
     findJdbcParameters();
+    // fill the column list
+    fillColumnList();
   }
 
   public void addUniqueKeyIndex(int idx) {
@@ -73,11 +79,15 @@ public class TemplateSQL implements Cloneable {
     if (!rewriteSQL.isEmpty()) return;
     if (identifySQLType(originSQL) == 1) {
       this.rewriteSQL = modifyUpdateQuery();
+      System.out.println("1 rewriteSQL: " + rewriteSQL);
     } else if (identifySQLType(originSQL) == 0) {
       this.rewriteSQL = modifySelectQuery();
+      System.out.println("2 rewriteSQL: " + rewriteSQL);
     } else {
       this.rewriteSQL = "";
+      System.out.println("3 rewriteSQL: " + rewriteSQL);
     }
+    System.out.println("rewriteSQL: " + rewriteSQL);
   }
 
   public int getUniqueKeyIdx(int idx) {
@@ -107,6 +117,48 @@ public class TemplateSQL implements Cloneable {
     }
   }
 
+  private void fillColumnList() {
+    CCJSqlParserManager parserManager = new CCJSqlParserManager();
+    try {
+      if (op == 0) {
+        // read
+        Select selectStatement = (Select) parserManager.parse(new StringReader(originSQL));
+        PlainSelect plainSelect = (PlainSelect) selectStatement.getSelectBody();
+        parseSelectItems(plainSelect.getSelectItems());
+      } else {
+        // write, parse the returning clause
+        Update updateStatement = (Update) parserManager.parse(new StringReader(originSQL));
+        parseSelectItems(updateStatement.getReturningExpressionList());
+      }
+    } catch (Exception e) {
+      System.out.println(e.toString());
+      System.out.println(Arrays.stream(e.getStackTrace())
+          .map(StackTraceElement::toString)
+          .collect(Collectors.joining("\n")));
+    }
+  }
+
+  private void parseSelectItems(List<SelectItem> selectItemList) {
+    if (selectItemList == null) {
+      return;
+    }
+
+    for (SelectItem selectItem: selectItemList) {
+      if (selectItem instanceof SelectExpressionItem selectExpressionItem) {
+        if (selectExpressionItem.getExpression() instanceof Column column) {
+          columnList.add(column);
+        }
+      } else if (selectItem instanceof AllColumns) {
+        selectAllAttr = true;
+        for (ColumnInfo c : MetaWorker.getINSTANCE().getSchema().getColumnInfoByTableName(table)) {
+          columnList.add(new Column(c.getName()));
+        }
+      } else {
+        System.out.println("unsupported select expression: " + selectItem);
+      }
+    }
+  }
+
   // Method: Add the field "vid" to the SELECT statement and ensure it is added at the end
   private String modifySelectQuery() {
     try {
@@ -120,39 +172,29 @@ public class TemplateSQL implements Cloneable {
       // Get the list of SELECT items (fields)
       List<SelectItem> selectItems = plainSelect.getSelectItems();
 
-      // Create a new column "vid"
-      Column vidColumn = new Column("vid");
+      if (!selectAllAttr) {
+        // Create a new column "vid"
+        Column vidColumn = new Column("vid");
 
-      // Create a new SELECT expression item (field)
-      SelectExpressionItem vidSelectItem = new SelectExpressionItem(vidColumn);
+        // Create a new SELECT expression item (field)
+        SelectExpressionItem vidSelectItem = new SelectExpressionItem(vidColumn);
 
-      // Add the "vid" field to the SELECT clause
-      selectItems.add(vidSelectItem);
-      columnList = convertSelectItemsToColumns(selectItems);
-      //          Arrays.stream(selectItems.toArray())
-      //              .filter(obj -> obj instanceof String)
-      //              .map(obj -> (String) obj)
-      //              .collect(Collectors.toList());
+        // Add the "vid" field to the SELECT clause and Column list
+        selectItems.add(vidSelectItem);
+        columnList.add(vidColumn);
+      }
+
       // Return the modified SQL statement
+      System.out.println("selectStatement: " + selectStatement.toString());
       return selectStatement.toString();
 
     } catch (Exception e) {
-      e.printStackTrace();
+      System.out.println(e.toString());
+      System.out.println(Arrays.stream(e.getStackTrace())
+              .map(StackTraceElement::toString)
+              .collect(Collectors.joining("\n")));
       return null;
     }
-  }
-
-  private List<Column> convertSelectItemsToColumns(List<SelectItem> selectItems) {
-    List<Column> columns = new ArrayList<>();
-    for (SelectItem selectItem : selectItems) {
-      if (selectItem instanceof SelectExpressionItem) {
-        SelectExpressionItem selectExpressionItem = (SelectExpressionItem) selectItem;
-        if (selectExpressionItem.getExpression() instanceof Column) {
-          columns.add((Column) selectExpressionItem.getExpression());
-        }
-      }
-    }
-    return columns;
   }
 
   // Method: Modify the SQL statement to add the "vid" field and return it
@@ -163,27 +205,48 @@ public class TemplateSQL implements Cloneable {
       Update updateStatement = (Update) parserManager.parse(new StringReader(originSQL));
 
       // Create the expression "vid = vid + 1"
-      Column vidColumn = new Column("vid");
+      Column vidLeftColumn = new Column("vid");
       LongValue oneValue = new LongValue(1); // Represents the constant 1
       Addition addExpression = new Addition(); // Addition represents the "vid + 1" operation
-      addExpression.setLeftExpression(vidColumn); // Left side is the "vid" column
+      Column vidRightColumn = new Column("vid");
+      if (updateStatement.getFromItem() != null && updateStatement.getFromItem().getAlias() != null
+              && updateStatement.getFromItem().getAlias().isUseAs()
+              && updateStatement.getFromItem() instanceof Table) {
+        vidRightColumn.setTable((Table) updateStatement.getFromItem());
+      }
+      addExpression.setLeftExpression(vidRightColumn); // Left side is the "vid" column
       addExpression.setRightExpression(oneValue); // Right side is the constant value 1
-      EqualsTo versionExpression = new EqualsTo(vidColumn, addExpression);
 
       // Add the SetExpression to the UPDATE statement
       updateStatement
           .getUpdateSets()
-          .add(new UpdateSet(vidColumn, addExpression)); // Add "vid = vid + 1" to the SET clause
+          .add(new UpdateSet(vidLeftColumn, addExpression)); // Add "vid = vid + 1" to the SET clause
 
-      // Manually add the RETURNING clause, since JSQLParser does not support it directly
-      updateStatement.setReturningExpressionList(List.of(new SelectExpressionItem(new Column("vid"))));
-      columnList.add(new Column("vid"));
+      // Add `vid` to the RETURNING clause
+      if (!selectAllAttr) {
+        Column vidReturnColumn = new Column("vid");
+        if (updateStatement.getFromItem() != null && updateStatement.getFromItem().getAlias() != null
+                && updateStatement.getFromItem().getAlias().isUseAs()
+                && updateStatement.getFromItem() instanceof Table) {
+          vidReturnColumn.setTable((Table) updateStatement.getFromItem());
+        }
+        if (updateStatement.getReturningExpressionList() == null) {
+          updateStatement.setReturningExpressionList(List.of(new SelectExpressionItem(vidReturnColumn)));
+        } else {
+          updateStatement.getReturningExpressionList().add(new SelectExpressionItem(vidReturnColumn));
+        }
+        columnList.add(new Column("vid"));
+      }
 
       // Return the modified SQL statement
+      System.out.println("updateStatement: " + updateStatement.toString());
       return updateStatement.toString();
 
     } catch (Exception e) {
-      e.printStackTrace();
+      System.out.println(e.toString());
+      System.out.println(Arrays.stream(e.getStackTrace())
+              .map(StackTraceElement::toString)
+              .collect(Collectors.joining("\n")));
       return null;
     }
   }
@@ -196,7 +259,6 @@ public class TemplateSQL implements Cloneable {
       CCJSqlParserManager parserManager = new CCJSqlParserManager();
 
       // Parse the SQL statement
-      System.out.println("sql: " + sql);
       Statement statement = parserManager.parse(new StringReader(sql));
 
       // Check the type of SQL statement
@@ -302,6 +364,9 @@ public class TemplateSQL implements Cloneable {
               allPlaceholders.add(new ConditionInfo(column, param1));
             }
           }
+          for (Expression expression: updateSet.getExpressions()) {
+            findJdbcParametersInSet(expression);
+          }
         }
 
         // Check WHERE clause
@@ -316,13 +381,30 @@ public class TemplateSQL implements Cloneable {
     }
   }
 
+  private void findJdbcParametersInSet(Expression where) {
+    if (where instanceof BinaryExpression binaryExpression) {
+      Expression leftExpression = binaryExpression.getLeftExpression();
+      Expression rightExpression = binaryExpression.getRightExpression();
+
+      if (rightExpression instanceof JdbcParameter param1 && leftExpression instanceof Column column1) {
+        allPlaceholders.add(new ConditionInfo(column1, param1));
+      }
+      if (rightExpression instanceof Column column2 && leftExpression instanceof JdbcParameter param2) {
+        allPlaceholders.add(new ConditionInfo(column2, param2));
+      }
+
+      // Recursively check nested expressions
+      findJdbcParametersInSet(leftExpression);
+      findJdbcParametersInSet(rightExpression);
+    }
+  }
+
   private void findJdbcParametersInWhere(Expression where) {
     if (where instanceof BinaryExpression binaryExpression) {
       Expression leftExpression = binaryExpression.getLeftExpression();
       Expression rightExpression = binaryExpression.getRightExpression();
 
       if (rightExpression instanceof JdbcParameter param1 && leftExpression instanceof Column column1) {
-        // TODO:
         allPlaceholders.add(new ConditionInfo(column1, param1));
         wherePlaceholders.add(new ConditionInfo(column1, param1));
       }
