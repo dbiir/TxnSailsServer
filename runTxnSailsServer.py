@@ -105,6 +105,7 @@ def run_once(f: str, online: bool):
     # traverse the dir
     config_path = "config/" + args.wl + "/" + f + "/" + args.engine + "/"
     config_path_local = "config/" + args.wl + ".xml"
+    schema_path_local = "config/" + args.wl + ".sql"
     print("config_path: " + config_path)
     unique_ts = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     for conf_file in traverse_dir(config_path):
@@ -117,7 +118,7 @@ def run_once(f: str, online: bool):
         output_file_path = result_dir + case_name + "/stdout.log"
         print("Run config - { " + case_name + " }")
         # 1. start txnSails server in this server
-        java_cmd = prefix_cmd_local + " -c " + config_path_local  + " -d " + result_dir + case_name + " -p " + phase
+        java_cmd = prefix_cmd_local + " -c " + config_path_local + " -s " + schema_path_local + " -d " + result_dir + case_name + " -p " + phase
         process = subprocess.Popen(java_cmd, shell=True, preexec_fn=os.setsid)
         time.sleep(5)
         # 1. create the remote directory

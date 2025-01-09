@@ -39,7 +39,7 @@ We provide four apis for clients:
 
 Application developer should rebuild a portion of their code to utilize TxnSails' capabilities and TxnSails can automatically guarantee the serializable.
 Note that we do not modify the application workload to achieve serializable, for example, we do not either promote reads to writes or introduce outside lock manager.
-We would continue to improve above apis and TxnSails to support serializable transactions for more hetergeneous database systems, 
+We would continue to improve above apis and TxnSails to support serializable transactions for more heterogeneous database systems, 
 thereby further reducing application development costs.
 
 
@@ -52,12 +52,12 @@ thereby further reducing application development costs.
 
 ## Evaluation
 ### Environment and Configuration
-We conducted our experiments on two servers, each equipped with an Intel(R) Xeon(R) Platinum 8361HC CPU @ 2.60GHz processer, which includes 24 physical cores, 64 GB of DRAM, and a 500 GB SSD. 
-The operation system was CentOS Linux release 7.9. 
+We conducted our experiments on two servers, each equipped with an Intel(R) Xeon(R) Platinum 8361HC CPU @ 2.60GHz processor, which includes 24 physical cores, 64 GB of DRAM, and a 500 GB SSD. 
+The operating system was CentOS Linux release 7.9. 
 
 We utilize BenchBase as our benchmark simulator, deploying it on a single server. We modify it to interface with TxnSails. By default, the experiments are conducted using 128 client terminals.
 
-We deployed PostgreSQL 15.2 as the database engine. For our database configuration, we allocated a buffer pool size of 24GB, limited the maximum number of connections to 2000, and established a lock wait timeout of 100 ms. To eliminate network-related variables from affecting the results, both \sysname and PostgreSQL were deployed on another server. 
+We deployed PostgreSQL 15.2 as the database engine. For our database configuration, we allocated a buffer pool size of 24GB, limited the maximum number of connections to 2000, and established a lock wait timeout of 100 ms. To eliminate network-related variables from affecting the results, both TxnSails and PostgreSQL were deployed on another server. 
 
 ### How to Build
 TxnSails requires JDK 21 and Maven 3.9+ for compilation. To run the build scripts, you need to ensure that Python 3.9+ is installed. Meanwhile, the graph learning module requires <TODO>.

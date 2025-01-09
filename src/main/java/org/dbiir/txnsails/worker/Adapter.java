@@ -11,7 +11,7 @@ import org.dbiir.txnsails.execution.WorkloadConfiguration;
 
 public class Adapter {
   private static final Adapter INSTANCE;
-  @Setter private boolean used = true; // true if DYNAMIC
+  @Setter private boolean used = false; // true if DYNAMIC
   private CCType currentCCType = CCType.SER;
   @Getter private CCType nextCCType;
   @Getter private CCType transitionLockCCType = CCType.NUM_CC;
