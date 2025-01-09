@@ -18,7 +18,7 @@ public class Flusher implements Runnable {
   private CCType ccType;
   private final boolean online;
   private final Socket socket;
-  private boolean use = false;
+  private boolean use = true;
 
   public Flusher(String workload, String prefix, CCType ccType, boolean online) {
     try {

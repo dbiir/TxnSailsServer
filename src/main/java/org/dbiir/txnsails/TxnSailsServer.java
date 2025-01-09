@@ -48,6 +48,7 @@ import io.netty.handler.codec.string.StringEncoder;
 public class TxnSailsServer {
   private static int DEFAULT_AUXILIARY_THREAD_NUM = 16; // used for
   private static Thread flushThread;
+  private static ChannelFuture f;
 
   public static void main(String[] args)
       throws InterruptedException, ParseException, SQLException, IOException {
@@ -95,7 +96,7 @@ public class TxnSailsServer {
                 }
               });
 
-      ChannelFuture f = b.bind(9876).sync();
+      f = b.bind(9876).sync();
       f.channel().closeFuture().sync();
     } finally {
       finishFlushThread();
@@ -205,7 +206,7 @@ public class TxnSailsServer {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws InterruptedException {
       String message = (String) msg;
-      System.out.println("Received: " + message);
+//      System.out.println("Received: " + message);
       String[] parts = message.split("#");
       for (int i = 0; i < parts.length; i++) {
         parts[i] = parts[i].trim();
@@ -220,7 +221,7 @@ public class TxnSailsServer {
           try {
             response = onlineWorker.get().execute(args);
             response = "OK#" + response;
-            System.out.println("response: " + response);
+//            System.out.println("response: " + response);
           } catch (SQLException ex) {
             // wrap error message
             response = MessageFormat.format(ERROR_FORMATTER, ex.getMessage(), ex.getSQLState(), ex.getErrorCode());
@@ -265,6 +266,11 @@ public class TxnSailsServer {
         case "register_end", "analysis" -> {
           response = "OK";
           OfflineWorker.getINSTANCE().register_end(args);
+        }
+        case "close" -> {
+          ctx.channel().close();
+          f.channel().close();
+          return;
         }
         default -> response = "Unknown function: " + functionName;
       }
