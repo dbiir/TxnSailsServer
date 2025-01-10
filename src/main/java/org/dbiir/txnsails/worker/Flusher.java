@@ -11,14 +11,14 @@ public class Flusher implements Runnable {
   private static final String ip = "localhost";
   private static final int port = 7654;
   private static final CCType[] types =
-      new CCType[] {CCType.SER, CCType.SI_TAILOR, CCType.RC_TAILOR};
+          new CCType[] {CCType.SER, CCType.SI_TAILOR, CCType.RC_TAILOR, CCType.DYNAMIC};
 
   private final String workload;
   @Setter private String outputFilePrefix;
-  private CCType ccType;
+  private final CCType ccType;
   private final boolean online;
   private final Socket socket;
-  private boolean use = false;
+  private boolean use = true;
 
   public Flusher(String workload, String prefix, CCType ccType, boolean online) {
     try {
