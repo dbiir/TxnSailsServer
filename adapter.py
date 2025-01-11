@@ -20,7 +20,7 @@ def prepare_for_connect():
 
     # Listen for connections
     server_socket.listen(1)
-    print('Waiting for connection...')
+    print('Waiting for connection...', flush=True)
 
     return server_socket
 
@@ -56,7 +56,7 @@ if __name__ == "__main__":
 
     # Accept a connection
     client_socket, client_address = server_socket.accept()
-    print('Connection established:', client_address)
+    print('Connection established:', client_address, flush=True)
     client_sockets.append(client_socket)
 
     # Receive and send messages
@@ -64,13 +64,13 @@ if __name__ == "__main__":
         data = client_socket.recv(10240).decode()
         if not data:
             break
-        print('Received message:', data)
+        print('Received message:', data, flush=True)
         variables: list[str] = data.split(",")
         if variables[0].lower() == "online":
             res = online_service.service(variables[1], variables[2].strip())
             reply = str(res) + "\n"
             client_socket.sendall(reply.encode('utf-8'))
-            print('Reply:', reply)
+            print('Reply:', reply, flush=True)
         elif variables[0].lower() == "offline":
             offline_service.service(variables[1], variables[2])
             reply = 'Train Finished!'

@@ -261,7 +261,7 @@ public class OnlineWorker implements Runnable {
         System.out.println(this.toString() + " is ready for switch");
       } else {
         try {
-          Thread.sleep(500);
+          Thread.sleep(5);
           // break;
         } catch (InterruptedException e) {
         }
@@ -438,7 +438,7 @@ public class OnlineWorker implements Runnable {
         System.out.println(this.toString() + " is ready for switch");
       } else {
         try {
-          Thread.sleep(500);
+          Thread.sleep(5);
           // break;
         } catch (InterruptedException ignored) {
         }
@@ -564,7 +564,7 @@ public class OnlineWorker implements Runnable {
 
   @Override
   public void run() {
-    MetaWorker.setThreadAffinity(id);
+//    MetaWorker.setThreadAffinity(id);
     while (!Thread.interrupted()) {
       String clientRequest = MetaWorker.getINSTANCE().getExecutionMessage(id);
       if (clientRequest != null) {
