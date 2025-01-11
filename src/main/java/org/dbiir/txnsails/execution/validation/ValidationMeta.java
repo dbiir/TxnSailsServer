@@ -29,14 +29,14 @@ public class ValidationMeta {
   private HashMap<String, Integer> uniqueKeys = new HashMap<>(4);
   private boolean locked = false;
 
-  public void addRuntimeArgs(List<String> args) {
+  public void addRuntimeArgs(List<String> args, int offset) {
     List<ConditionInfo> whereConditionInfos = templateSQL.getWherePlaceholders();
-    if (args.size() < whereConditionInfos.size()) {
+    if (args.size() - offset < whereConditionInfos.size()) {
       idForValidation = -1;
       return;
     }
     for (ConditionInfo conditionInfo : whereConditionInfos) {
-      int v = Integer.parseInt(args.get(conditionInfo.getPlaceholderIndex()));
+      int v = Integer.parseInt(args.get(offset + conditionInfo.getPlaceholderIndex()));
       uniqueKeys.put(conditionInfo.getUpperCaseColumnName(), v);
     }
     // calculate the id for validation

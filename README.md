@@ -111,4 +111,4 @@ python3 runTxnSailsServer.py -w ycsb -f dynamic-128 -e postgresql -p online
 python3 runTxnSailsServer.py -w smallbank -f hotspot-256 -e postgresql -p online
 ```
 
-plot the results by python.
+Note: you should replace the `prefix_cmd_local`, `prefix_cmd_remote_java`, `remote_client_dir`, `config_prefix`, and `remote_machine_ip` with your own configuration. 

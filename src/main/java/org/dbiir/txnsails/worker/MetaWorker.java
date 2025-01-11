@@ -1,9 +1,19 @@
 package org.dbiir.txnsails.worker;
 
-import java.util.*;
+import com.sun.jna.Library;
+import com.sun.jna.Native;
+import com.sun.jna.Platform;
+import com.sun.jna.Pointer;
+import com.sun.jna.Memory;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import lombok.Getter;
-import lombok.Setter;
+
 import org.dbiir.txnsails.analysis.ChordAbsentCycleFinder;
 import org.dbiir.txnsails.analysis.SchemaInfo;
 import org.dbiir.txnsails.common.*;
@@ -11,6 +21,9 @@ import org.dbiir.txnsails.common.constants.SmallBankConstants;
 import org.dbiir.txnsails.common.constants.TPCCConstants;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
 import org.dbiir.txnsails.common.types.DependencyType;
+
+import lombok.Getter;
+import lombok.Setter;
 
 public class MetaWorker {
   @Getter private static MetaWorker INSTANCE = new MetaWorker();
@@ -21,6 +34,18 @@ public class MetaWorker {
   private final HashMap<String, Integer> relationEncodeMap = new HashMap<>();
   @Getter @Setter private SchemaInfo schema;
 
+  // create the shared netty context array
+  private static final int MAX_CLIENT_CONNECTIONS = 200;
+  private AtomicBoolean[] messageSignalPool = new AtomicBoolean[MAX_CLIENT_CONNECTIONS];
+  private String[] messagePool = new String[MAX_CLIENT_CONNECTIONS];
+
+  // core affinity
+  public static int MAX_AVAILABLE_CORES = 1;
+
+  // error handling
+  public static final String ERROR_FORMATTER =
+          "ERROR#{0}#{1}#{2}"; // reason, SQLState, vendorCode
+
   public MetaWorker() {
     globalTemplateTypeGenerator = 1;
     registerTable();
@@ -28,7 +53,7 @@ public class MetaWorker {
 
   public synchronized void registerTemplateName(String template_name) {
     templates.computeIfAbsent(
-        template_name, k -> new TransactionTemplate(template_name, globalTemplateTypeGenerator));
+            template_name, k -> new TransactionTemplate(template_name, globalTemplateTypeGenerator));
     globalTemplateTypeGenerator <<= 1;
   }
 
@@ -38,7 +63,7 @@ public class MetaWorker {
   }
 
   public int registerTemplateSQL(
-      String template_name, int op, String relation, String sql, int idx) {
+          String template_name, int op, String relation, String sql, int idx) {
     templates.computeIfAbsent(template_name, k -> new TransactionTemplate(template_name));
     templates.get(template_name).setSkipIndex(idx, true);
     return templates.get(template_name).addTemplateSQL(op, relation, sql);
@@ -94,7 +119,7 @@ public class MetaWorker {
     // analysis SI
     System.out.println("====== SI ======");
     Set<StaticDependencyCycle> cyclesWithTwoConsecutiveReadWrite =
-        findCyclesWithTwoConsecutiveReadWrite(allCycles);
+            findCyclesWithTwoConsecutiveReadWrite(allCycles);
     for (StaticDependencyCycle cycle : cyclesWithTwoConsecutiveReadWrite) {
       System.out.println(cycle);
     }
@@ -103,15 +128,15 @@ public class MetaWorker {
       List<StaticDependencyGraphEdge> edges = cycle.edges();
       for (int i = 0; i < edges.size(); i++) {
         if (edges.get(i).getType() == DependencyType.READ_WRITE
-            && edges.get((i + 1) % edges.size()).getType() == DependencyType.READ_WRITE) {
+                && edges.get((i + 1) % edges.size()).getType() == DependencyType.READ_WRITE) {
           edges
-              .get((i + 1) % edges.size())
-              .getFrom()
-              .setSQLRewriteByIndex(edges.get((i + 1) % edges.size()).getIdxInFrom(), "SI");
+                  .get((i + 1) % edges.size())
+                  .getFrom()
+                  .setSQLRewriteByIndex(edges.get((i + 1) % edges.size()).getIdxInFrom(), "SI");
           edges
-              .get((i + 1) % edges.size())
-              .getTo()
-              .setSQLRewriteByIndex(edges.get((i + 1) % edges.size()).getIdxInTo(), "SI");
+                  .get((i + 1) % edges.size())
+                  .getTo()
+                  .setSQLRewriteByIndex(edges.get((i + 1) % edges.size()).getIdxInTo(), "SI");
         }
       }
     }
@@ -133,14 +158,14 @@ public class MetaWorker {
   }
 
   private Set<StaticDependencyCycle> findCyclesWithTwoConsecutiveReadWrite(
-      Set<StaticDependencyCycle> allCycles) {
+          Set<StaticDependencyCycle> allCycles) {
     Set<StaticDependencyCycle> result = new HashSet<>();
 
     for (StaticDependencyCycle cycle : allCycles) {
       List<StaticDependencyGraphEdge> edges = cycle.edges();
       for (int i = 0; i < edges.size(); i++) {
         if (edges.get(i).getType() == DependencyType.READ_WRITE
-            && edges.get((i + 1) % edges.size()).getType() == DependencyType.READ_WRITE) {
+                && edges.get((i + 1) % edges.size()).getType() == DependencyType.READ_WRITE) {
           result.add(cycle);
           break; // find a cycle with two consecutive RW
         }
@@ -158,5 +183,64 @@ public class MetaWorker {
 
   public void flushAnalysisResult() {
     // for failure recovery
+  }
+
+  public static void setThreadAffinity(int coreId) {
+    if (!Platform.isLinux()) {
+      System.out.println("Setting thread affinity is supported only for Linux");
+      return;
+    }
+    int pid = (int) Thread.currentThread().threadId();
+    int longSize = Native.getNativeSize(Long.TYPE);
+    int numLongs = (MAX_AVAILABLE_CORES + 63) / 64;
+    Pointer cpuset = new Memory((long) longSize * numLongs);
+    cpuset.clear((long) longSize * numLongs);
+
+    // set the core
+    int assignedCore = coreId % MAX_AVAILABLE_CORES;
+    int longIndex = assignedCore / 64;
+    int bitIndex = assignedCore % 64;
+    cpuset.setLong((long) longIndex * longSize, 1L << bitIndex);
+
+    int result = CLibrary.INSTANCE.sched_setaffinity(pid, longSize * numLongs, cpuset);
+    if (result != 0) {
+      throw new RuntimeException("Failed to set thread affinity: " + Native.getLastError());
+    }
+  }
+
+  public static void setThreadAffinityMacOS(int coreId) {
+    System.out.println("Setting thread affinity is not supported on macOS.");
+  }
+
+  public void initExecutionContext(int idx) {
+    if (idx >= MAX_CLIENT_CONNECTIONS) {
+      String msg = "too many connectors";
+      System.out.println(msg);
+      throw new RuntimeException(msg);
+    }
+    messageSignalPool[idx] = new AtomicBoolean(false);
+    messagePool[idx] = "";
+  }
+
+  public String getExecutionMessage(int idx) {
+    if (!messageSignalPool[idx].get()) {
+      return null;
+    } else {
+      return messagePool[idx];
+    }
+  }
+
+  public void addExecutionMessage(int idx, String msg) {
+    if (messageSignalPool[idx].get()) {
+      String errMsg = "can not execute before previous execution complete";
+      throw new RuntimeException(errMsg);
+    }
+    messagePool[idx] = msg;
+    messageSignalPool[idx].set(true);
+  }
+
+  public void resetMessageSignal(int idx) {
+    assert messageSignalPool[idx].get();
+    messageSignalPool[idx].set(false);
   }
 }

@@ -45,6 +45,12 @@ public class Adapter {
     guardForWorkers.unlock();
   }
 
+  public void removeOnlineWorker(int id) {
+    guardForWorkers.lock();
+    workers.removeIf(w -> w.getId() == id);
+    guardForWorkers.unlock();
+  }
+
   public void setNextCCType(CCType ccType) {
     if (!used) {
       return;
@@ -53,10 +59,9 @@ public class Adapter {
     if (nextCCType == currentCCType) {
       nextCCType = CCType.NUM_CC;
     } else {
-      // TODO: switch to new isolation level
       /*
        * 1. (not necessary) set the isolation level in benchmark module
-       * 2. notify all workers the new isolation to block the transaction that no enter validation: transition phase
+       * 2. notify all workers the new isolation to block the transaction that no enters validation: transition phase
        * 3. travel through the worker list to determine whether all workers finish the switch
        * 4. notify all workers to use the validation in new isolation level
        */
@@ -109,16 +114,21 @@ public class Adapter {
   }
 
   private boolean allSwitchFinish() {
+    guardForWorkers.lock();
     for (OnlineWorker worker : workers) {
       if (!worker.isSwitchFinish()) {
         try {
+          System.out.println(worker.toString() + " is not finish");
           Thread.sleep(5);
         } catch (InterruptedException e) {
+          guardForWorkers.unlock();
           System.out.println("Thread.sleep() interrupted");
         }
+        guardForWorkers.unlock();
         return false;
       }
     }
+    guardForWorkers.unlock();
     return true;
   }
 
@@ -131,15 +141,20 @@ public class Adapter {
 
   private boolean allSwitchPhaseReady() {
     // ready if its validation is
+    guardForWorkers.lock();
     for (OnlineWorker worker : workers) {
       if (!worker.isSwitchPhaseReady()) {
         try {
+          System.out.println(worker.toString() + " is not ready");
           Thread.sleep(5);
         } catch (InterruptedException e) {
+          guardForWorkers.unlock();
         }
+        guardForWorkers.unlock();
         return false;
       }
     }
+    guardForWorkers.unlock();
     return true;
   }
 

@@ -211,7 +211,7 @@ class OfflineService:
             self.optimizer.zero_grad()
             # print("data.batch" + int(data.batch))
             with autocast():
-                out, embed = self.model(data)
+                out = self.model(data)
                 out = out.flatten()
                 loss = F.cross_entropy(out, data.y)
             print(loss)
@@ -226,7 +226,7 @@ class OfflineService:
         self.model.eval()
         correct = 0
         for data in loader:
-            out, _ = self.model(data)
+            out = self.model(data)
             max_values, _ = torch.max(out, dim=1)
             result = torch.where(out == max_values.unsqueeze(1), 1.0, 0)
             pred = result.flatten()

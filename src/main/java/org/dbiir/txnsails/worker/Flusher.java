@@ -1,6 +1,10 @@
 package org.dbiir.txnsails.worker;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.net.Socket;
 import lombok.Setter;
 import lombok.SneakyThrows;
@@ -18,7 +22,7 @@ public class Flusher implements Runnable {
   private final CCType ccType;
   private final boolean online;
   private final Socket socket;
-  private boolean use = true;
+  private boolean use = false;
 
   public Flusher(String workload, String prefix, CCType ccType, boolean online) {
     try {
@@ -26,10 +30,9 @@ public class Flusher implements Runnable {
       this.outputFilePrefix = prefix;
       this.ccType = ccType;
       this.online = online;
-      if (use && online)
-        this.socket = new Socket(ip, port);
-      else
-        this.socket = new Socket();
+      if (use && online) this.socket = new Socket(ip, port);
+      else this.socket = new Socket();
+      System.out.println(socket.getInetAddress() + ":" + socket.getPort());
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -45,7 +48,21 @@ public class Flusher implements Runnable {
   @SneakyThrows
   @Override
   public void run() {
+    long start_ts = System.currentTimeMillis();
+    boolean a = false, b = false, c = false;
     while (!Thread.currentThread().isInterrupted()) {
+      if (System.currentTimeMillis() - start_ts > 15000 && !a) {
+        Adapter.getInstance().setNextCCType("1");
+        a = true;
+      }
+      if (System.currentTimeMillis() - start_ts > 20000 && !b) {
+        Adapter.getInstance().setNextCCType("2");
+        b = true;
+      }
+      if (System.currentTimeMillis() - start_ts > 25000 && !c) {
+        Adapter.getInstance().setNextCCType("0");
+        c = true;
+      }
       if (TransactionCollector.getInstance().isNeedFlush() && needFlush(ccType)) {
         long timestamp = System.currentTimeMillis();
         String fileName = outputFilePrefix + "sample_" + timestamp;
@@ -64,14 +81,15 @@ public class Flusher implements Runnable {
         }
 
         TransactionCollector.getInstance().refreshMetas();
-        if (online) {
+        if (online && use) {
           PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
           BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-          out.println(workload + ",predict," + fileName);
+          out.println("online,predict," + fileName);
+          System.out.println("Send the request to the server: " + "online,predict," + fileName);
           String data = in.readLine();
           System.out.println("Receive the prediction result: " + data);
           // TODO: change the
-          Adapter.getInstance().setNextCCType(data);
+          // Adapter.getInstance().setNextCCType(data);
         }
         System.out.println("Flush time cost: " + (System.currentTimeMillis() - timestamp) + " ms");
       }

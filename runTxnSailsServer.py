@@ -122,7 +122,7 @@ def run_once(f: str, online: bool):
         process = subprocess.Popen(java_cmd, shell=True, preexec_fn=os.setsid)
         time.sleep(5)
         # 1. create the remote directory
-        remote_cmd = "ssh " + remote_machine_ip + " \"mkdir -p " + remote_client_dir + result_dir + "\" "
+        remote_cmd = "ssh " + remote_machine_ip + " \"mkdir -p " + remote_client_dir + result_dir + case_name + "\" "
         run_shell_command(remote_cmd, 10)
         cmd_remote_java = prefix_cmd_remote_java + " -b " + args.wl + " -c " + config_path + case_name + ".xml" + \
             " --execute=true -d " + result_dir + case_name + " -p " + phase + " > " + output_file_path
