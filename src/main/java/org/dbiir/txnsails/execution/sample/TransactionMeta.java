@@ -14,14 +14,16 @@ public class TransactionMeta {
 
   public TransactionMeta(int id) {
     this.id = id;
-    this.rset = new ArrayList<>(8);
-    this.wset = new ArrayList<>(8);
+    this.rset = new ArrayList<>(12);
+    this.wset = new ArrayList<>(12);
   }
 
   public TransactionMeta(int id, List<RWRecord> rset, List<RWRecord> wset, int processing) {
     this.id = id;
-    this.rset = rset;
-    this.wset = wset;
+    this.rset = new ArrayList<>(12);
+    this.wset = new ArrayList<>(12);
+    this.rset.addAll(rset);
+    this.wset.addAll(wset);
     this.processing = processing;
   }
 

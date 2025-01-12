@@ -64,7 +64,7 @@ public class TxnSailsServer {
     ValidationMetaTable.getInstance()
             .initHotspot(workloadConfiguration.getBenchmarkName(), auxiliaryConnectionList);
 
-    threadPool = Executors.newFixedThreadPool(16);
+    threadPool = Executors.newFixedThreadPool(128);
     try {
       createFlushThread(
               argsLine,
