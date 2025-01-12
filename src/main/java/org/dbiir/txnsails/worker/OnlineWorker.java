@@ -1,16 +1,12 @@
 package org.dbiir.txnsails.worker;
 
-import java.nio.charset.StandardCharsets;
 import java.sql.*;
-import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelHandlerContext;
 import lombok.Getter;
 import lombok.Setter;
 import net.sf.jsqlparser.schema.Column;
@@ -30,7 +26,7 @@ import org.dbiir.txnsails.execution.validation.TransactionCollector;
 import org.dbiir.txnsails.execution.validation.ValidationMeta;
 import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
 
-public class OnlineWorker implements Runnable {
+public class OnlineWorker {
   protected Connection conn = null;
   private WorkloadConfiguration configuration = null;
   private final Random random = new Random();
@@ -59,13 +55,10 @@ public class OnlineWorker implements Runnable {
   private ValidationMeta sampleMeta = new ValidationMeta();
   private CCType lockManner = CCType.SER;
   private final SchemaInfo schema;
-  // variables for netty
-  private final ChannelHandlerContext ctx;
 
-  public OnlineWorker(WorkloadConfiguration configuration, int id, ChannelHandlerContext context) {
+  public OnlineWorker(WorkloadConfiguration configuration, int id) {
     this.configuration = configuration;
     this.id = id;
-    this.ctx = context;
     // init the connection
     try {
       this.conn = makeConnection();
@@ -192,7 +185,6 @@ public class OnlineWorker implements Runnable {
       } catch (SQLException ex) {
         // check if the error can retry automatically, in the future
         System.out.println(this.toString() + "Error execute sql: " + executeSQL);
-        System.out.println(ex);
         throw ex;
       }
     }
@@ -329,9 +321,9 @@ public class OnlineWorker implements Runnable {
       if (v != meta.getOldVersions()) {
         String msg =
                 String.format(
-                        "Validation failed for key #%d, %s",
+                        "Validation failed for key %d, %s",
                         meta.getIdForValidation(), meta.getTemplateSQL().getTable());
-        throw new SQLException(msg, "500");
+        throw new SQLException(msg, "500", 0);
       }
     } else {
       System.out.println(this.toString() + " fetch unknown version");
@@ -343,8 +335,8 @@ public class OnlineWorker implements Runnable {
         //          releaseValidationLocks(false);
         String msg =
                 String.format(
-                        "Validation failed for ycsb_key #%d, usertable", meta.getIdForValidation());
-        throw new SQLException(msg, "500");
+                        "Validation failed for ycsb_key %d, usertable", meta.getIdForValidation());
+        throw new SQLException(msg, "500", 0);
       }
       System.out.println(this.toString() + " fetch unknown version down");
     }
@@ -562,62 +554,8 @@ public class OnlineWorker implements Runnable {
     return String.format("%s<%03d>", this.getClass().getSimpleName(), this.getId());
   }
 
-  @Override
-  public void run() {
-//    MetaWorker.setThreadAffinity(id);
-    while (!Thread.interrupted()) {
-      String clientRequest = MetaWorker.getINSTANCE().getExecutionMessage(id);
-      if (clientRequest != null) {
-        // execute the request
-        String response = "";
-        String[] parts = clientRequest.split("#");
-        for (int i = 0; i < parts.length; i++) {
-          parts[i] = parts[i].trim();
-        }
-        String functionName = parts[0].toLowerCase(); // function name is case-insensitive
-        try {
-          switch (functionName) {
-            case "execute" -> {
-              response = execute(parts, 3);
-              response = "OK#" + response;
-            }
-            case "commit" -> {
-              commit();
-              response = "OK";
-            }
-            case "rollback" -> {
-              rollback();
-              response = "OK";
-            }
-            default -> {
-              System.out.println(functionName + " can not be handled by OnlineWorker");
-            }
-          }
-        } catch (SQLException ex) {
-          response = MessageFormat.format(
-                  MetaWorker.ERROR_FORMATTER, ex.getMessage(), ex.getSQLState(), ex.getErrorCode());
-        }
-
-        // reset the client signal
-        MetaWorker.getINSTANCE().resetMessageSignal(id);
-        // send the response
-        try {
-          sendMessage(response);
-        } catch (InterruptedException e) {
-          System.out.println(Arrays.stream(e.getStackTrace()));
-          ctx.close();
-          return;
-        }
-      }
-    }
+  public void closeWorker() {
     Adapter.getInstance().removeOnlineWorker(id);
-    System.out.println(this.toString() +  " is out!");
-  }
-
-  private void sendMessage(String msg) throws InterruptedException {
-    System.out.println(this.toString() + " sending: " + msg);
-    ByteBuf resp = ctx.alloc().buffer(msg.length());
-    resp.writeBytes(msg.getBytes(StandardCharsets.UTF_8));
-    ctx.writeAndFlush(resp).sync();
+    System.out.println(this.toString() + " removes from Adapter");
   }
 }

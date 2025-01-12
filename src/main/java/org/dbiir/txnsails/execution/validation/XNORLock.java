@@ -48,12 +48,12 @@ public class XNORLock {
         if (strategy == LockStrategyType.NO_WAIT) {
           lock.unlock();
           String msg = "Abort due to no wait, transaction id: " + transactionId;
-          throw new SQLException(msg, "500");
+          throw new SQLException(msg, "500", 0);
         }
         if (!admitByWaitDieStrategy(transactionId)) {
           lock.unlock();
           String msg = "Abort due to wait die, transaction id: " + transactionId;
-          throw new SQLException(msg, "500");
+          throw new SQLException(msg, "500", 0);
         }
         LockEntry entry = new LockEntry(transactionId, type);
         waitList.add(entry);
@@ -66,7 +66,7 @@ public class XNORLock {
             waitList.removeIf(e -> e.getTransactionId() == transactionId);
             lock.unlock();
             String msg = "Abort due to wait die and timeout, transaction id: " + transactionId;
-            throw new SQLException(msg, "500");
+            throw new SQLException(msg, "500", 0);
           }
         }
       } else {

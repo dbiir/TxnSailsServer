@@ -320,7 +320,7 @@ public class ValidationMetaTable {
                   + tid
                   + " can not keep the sequence of rw dependency, there maybe rw-anti-dependency";
           validationBucketLocks.get(table)[bucketNum].readLock().unlock();
-          throw new SQLException(msg, "500");
+          throw new SQLException(msg, "500", 0);
         }
       }
     }
@@ -362,7 +362,7 @@ public class ValidationMetaTable {
         if (res <= 0) {
           // can not keep the sequence of read and write
           String msg = "can not keep the sequence of rw dependency, there maybe rw-anti-dependency";
-          throw new SQLException(msg, "500");
+          throw new SQLException(msg, "500", 0);
         }
         return;
       }

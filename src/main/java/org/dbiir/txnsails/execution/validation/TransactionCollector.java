@@ -11,7 +11,7 @@ import org.dbiir.txnsails.execution.utils.RWRecord;
 
 public class TransactionCollector {
   private static final TransactionCollector INSTANCE;
-  public static int TRANSACTION_BATCH = 250;
+  public static int TRANSACTION_BATCH = 128;
   private static final double SAMPLE_PROBABILITY = 0.01;
   private final Random random = new Random();
   static String edgeFormat = "#%d,%d,%d";
