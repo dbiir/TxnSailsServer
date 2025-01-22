@@ -49,6 +49,7 @@ public class TransactionCollector {
     lock.unlock();
   }
 
+  // runtime dependency graph (RDGBuilder)
   public String getTransactionNodeFeature(int idx) {
     return transactionMetas[idx].transactionFeature();
   }

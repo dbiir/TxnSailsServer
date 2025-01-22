@@ -63,6 +63,7 @@ public class OnlineWorker {
     try {
       this.conn = makeConnection();
       this.conn.setAutoCommit(false);
+      this.ccType = configuration.getConcurrencyControlType();
       switch (ccType) {
         case RC, RC_TAILOR ->
                 this.conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
@@ -126,13 +127,13 @@ public class OnlineWorker {
       meta.setTemplateSQL(templateSQL);
       if (templateSQL.getUniqueKeyNumber() <= args.length - offset) {
         meta.addRuntimeArgs(List.of(args), offset);
-        System.out.println(
-                this.toString()
-                        + templateSQL.getSQL()
-                        + ", "
-                        + Arrays.asList(args).subList(offset, args.length)
-                        + ", Id for validation: "
-                        + meta.getIdForValidation());
+        // System.out.println(
+        //         this.toString()
+        //                 + templateSQL.getSQL()
+        //                 + ", "
+        //                 + Arrays.asList(args).subList(offset, args.length)
+        //                 + ", Id for validation: "
+        //                 + meta.getIdForValidation());
 
         if (shouldSample) {
           addSampleMeta(
@@ -181,7 +182,7 @@ public class OnlineWorker {
             validationMetaUnderSI[validationMetaIdxUnderSI - 1].setOldVersions(v);
           }
         }
-        System.out.println(this.toString() + " execute finished");
+        // System.out.println(this.toString() + " execute finished");
       } catch (SQLException ex) {
         // check if the error can retry automatically, in the future
         System.out.println(this.toString() + "Error execute sql: " + executeSQL);
@@ -195,11 +196,11 @@ public class OnlineWorker {
   public void commit() throws SQLException {
     /* validate before commitment, release validation locks after commitment */
     try {
-      System.out.println(this.toString() + " is validating");
+      // System.out.println(this.toString() + " is validating");
       validate();
-      System.out.println(this.toString() + " has validated, is committing");
+      // System.out.println(this.toString() + " has validated, is committing");
       conn.commit();
-      System.out.println(this.toString() + " has committed");
+      // System.out.println(this.toString() + " has committed");
       releaseValidationLocks(true);
       if (shouldSample) sampleTransaction(true);
     } catch (SQLException ex) {
@@ -216,17 +217,17 @@ public class OnlineWorker {
             (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
     // switch the isolation mode
     if (Adapter.getInstance().isInSwitchPhase()) {
-      System.out.println(this.toString() + " enters switch phase");
+      // System.out.println(this.toString() + " enters switch phase");
       switchConnectionIsolationMode();
     }
-    System.out.println(this.toString() + " return commit()");
+    // System.out.println(this.toString() + " return commit()");
   }
 
   public void rollback() throws SQLException {
     try {
-      System.out.println(this.toString() + " is rollbacking");
+      // System.out.println(this.toString() + " is rollbacking");
       conn.rollback();
-      System.out.println(this.toString() + " has been rollbacked");
+      // System.out.println(this.toString() + " has been rollbacked");
     } finally {
       clearPreviousTransactionInfo();
       /* sample transaction if txnSails needs and choose whether sample next transaction */
@@ -250,7 +251,7 @@ public class OnlineWorker {
       // set current thread ready, block for all thread to ready
       if (!this.switchPhaseReady) {
         this.switchPhaseReady = true;
-        System.out.println(this.toString() + " is ready for switch");
+        // System.out.println(this.toString() + " is ready for switch");
       } else {
         try {
           Thread.sleep(5);
@@ -281,7 +282,7 @@ public class OnlineWorker {
                         validationMeta.getIdForValidation(),
                         lockType,
                         Adapter.getInstance().getCCType());
-        System.out.println(this.toString() + " validated " + validationMeta.getIdForValidation());
+        // System.out.println(this.toString() + " validated " + validationMeta.getIdForValidation());
         validationMeta.setLocked(true);
       }
     } else if (lockManner == CCType.SI_TAILOR) {
@@ -296,7 +297,7 @@ public class OnlineWorker {
                         validationMeta.getIdForValidation(),
                         lockType,
                         Adapter.getInstance().getCCType());
-        System.out.println(this.toString() + " validated " + validationMeta.getIdForValidation());
+        // System.out.println(this.toString() + " validated " + validationMeta.getIdForValidation());
         validationMeta.setLocked(true);
       }
     }
@@ -326,7 +327,7 @@ public class OnlineWorker {
         throw new SQLException(msg, "500", 0);
       }
     } else {
-      System.out.println(this.toString() + " fetch unknown version");
+      // System.out.println(this.toString() + " fetch unknown version");
       v =
               ValidationMetaTable.getInstance()
                       .fetchUnknownVersionCache(
@@ -338,7 +339,7 @@ public class OnlineWorker {
                         "Validation failed for ycsb_key %d, usertable", meta.getIdForValidation());
         throw new SQLException(msg, "500", 0);
       }
-      System.out.println(this.toString() + " fetch unknown version down");
+      // System.out.println(this.toString() + " fetch unknown version down");
     }
   }
 

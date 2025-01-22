@@ -6,23 +6,39 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
-import lombok.Getter;
-import lombok.Setter;
-import net.sf.jsqlparser.JSQLParserException;
-import net.sf.jsqlparser.expression.*;
-import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
-import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
-import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
-import net.sf.jsqlparser.expression.operators.relational.*;
-import net.sf.jsqlparser.parser.*;
-import net.sf.jsqlparser.schema.*;
-import net.sf.jsqlparser.statement.*;
-import net.sf.jsqlparser.statement.select.*;
-import net.sf.jsqlparser.statement.update.*;
 import org.dbiir.txnsails.analysis.ColumnInfo;
 import org.dbiir.txnsails.analysis.ConditionInfo;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
 import org.dbiir.txnsails.worker.MetaWorker;
+
+import lombok.Getter;
+import lombok.Setter;
+import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.expression.BinaryExpression;
+import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.JdbcParameter;
+import net.sf.jsqlparser.expression.LongValue;
+import net.sf.jsqlparser.expression.StringValue;
+import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
+import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
+import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
+import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.GreaterThan;
+import net.sf.jsqlparser.expression.operators.relational.GreaterThanEquals;
+import net.sf.jsqlparser.expression.operators.relational.MinorThan;
+import net.sf.jsqlparser.expression.operators.relational.MinorThanEquals;
+import net.sf.jsqlparser.parser.CCJSqlParserManager;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.schema.Column;
+import net.sf.jsqlparser.schema.Table;
+import net.sf.jsqlparser.statement.Statement;
+import net.sf.jsqlparser.statement.select.AllColumns;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.statement.select.Select;
+import net.sf.jsqlparser.statement.select.SelectExpressionItem;
+import net.sf.jsqlparser.statement.select.SelectItem;
+import net.sf.jsqlparser.statement.update.Update;
+import net.sf.jsqlparser.statement.update.UpdateSet;
 
 @Getter
 public class TemplateSQL implements Cloneable {
@@ -209,10 +225,11 @@ public class TemplateSQL implements Cloneable {
       LongValue oneValue = new LongValue(1); // Represents the constant 1
       Addition addExpression = new Addition(); // Addition represents the "vid + 1" operation
       Column vidRightColumn = new Column("vid");
-      if (updateStatement.getFromItem() != null && updateStatement.getFromItem().getAlias() != null
-              && updateStatement.getFromItem().getAlias().isUseAs()
-              && updateStatement.getFromItem() instanceof Table) {
-        vidRightColumn.setTable((Table) updateStatement.getFromItem());
+      if (updateStatement.getTable() != null
+          && updateStatement.getTable().getAlias() != null
+          && updateStatement.getTable().getAlias().isUseAs()
+          && updateStatement.getFromItem() instanceof Table) {
+        vidRightColumn.setTable(updateStatement.getTable());
       }
       addExpression.setLeftExpression(vidRightColumn); // Left side is the "vid" column
       addExpression.setRightExpression(oneValue); // Right side is the constant value 1

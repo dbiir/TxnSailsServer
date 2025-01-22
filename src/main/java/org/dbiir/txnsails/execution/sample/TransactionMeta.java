@@ -2,8 +2,10 @@ package org.dbiir.txnsails.execution.sample;
 
 import java.util.ArrayList;
 import java.util.List;
-import lombok.Getter;
+
 import org.dbiir.txnsails.execution.utils.RWRecord;
+
+import lombok.Getter;
 
 @Getter
 public class TransactionMeta {
@@ -42,10 +44,11 @@ public class TransactionMeta {
   }
 
   //    static String featureFormat = "%d,%.2f";
-  static String featureFormat = "%d";
+  static String featureFormat = "%d, %d";
 
   public String transactionFeature() {
     //        return featureFormat.formatted(id, processing);
-    return featureFormat.formatted(id);
+    // return featureFormat.formatted(id);
+    return featureFormat.formatted(rset.size(), wset.size());
   }
 }

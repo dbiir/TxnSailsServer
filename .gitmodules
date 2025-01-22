@@ -1,0 +1,3 @@
+[submodule "txnSailsClient"]
+	path = txnSailsClient
+	url = https://github.com/QiYuZhuang/TriStar

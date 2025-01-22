@@ -87,7 +87,7 @@ class OfflineService:
 
     def train(self):
         if self.model is None:
-            self.model = GraphClassificationModel(in_channels=4, edge_in_channels=2, hidden_channels=64, out_channels=3)
+            self.model = GraphClassificationModel(in_channels=1, edge_in_channels=2, hidden_channels=64, out_channels=3)
             if torch.cuda.is_available():
                 self.device = torch.device('cuda')
             else:
@@ -126,7 +126,7 @@ class OfflineService:
             train_acc = self.test_epoch(test_loader)
             print(f'Epoch: {epoch:03d}, Train Acc: {train_acc:.4f}')
         
-        # torch.save(self.model, self.__model_prefix + "ycsb04" + self.__model_postfix)
+        torch.save(self.model, self.__model_prefix + "ycsb04" + self.__model_postfix)
 
     def train2(self):
         if self.model is None:
@@ -214,7 +214,7 @@ class OfflineService:
                 out = self.model(data)
                 out = out.flatten()
                 loss = F.cross_entropy(out, data.y)
-            print(loss)
+            # print(loss)
             # loss.backward()
             # self.optimizer.step()
             self.scaler.scale(loss).backward()
