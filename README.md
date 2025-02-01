@@ -19,9 +19,13 @@ Key modules and corresponding source code:
 1. `Analyzer` - src/.../worker/OfflineWorker, src/.../analysis/*
 2. `Executor` - src/.../worker/OnlineWorker, src/.../execution/validation/*
 3. `Adapter` - src/.../worker/{Adapter, Flusher}, src/.../execution/sample/\*, isolation\_adapter/\* (Python)
+    - `isolation\_adapter/graph\_construct`: graph construction
+    - `isolation\_adapter/graph\_training`: graph embedding and classfication
+    - `isolation\_adapter/services`: offline training service and online prediction service
+    - `adapter.py`: connection
 4. `Client` - txnSailsClient 
 
-Note: `...` represents the filepath `main/java/org/dbiir/txnsails`.
+*Note: `...` represents the filepath `main/java/org/dbiir/txnsails`.*
 
 ### Implementation
 **Analyzer**: We first implemented a *StaticDependencyGraph* class that takes the transaction templates as input and builds a static dependency graph. Then, the graph is fed into the *ChordAbsentCycleFinder* class to detect cycles with characteristics defined in theorem 2.1. At last, it identifies the transaction templates involving static vulnerable dependencies and stores the results in MetaWorker instance.
@@ -109,6 +113,9 @@ You can run the following command to get help:
 
 ``` shell
 python3 runTxnSailsServer.py -h
+
+# If you need start adapter , run following shell
+python3 adapter.py -w <your workload>
 ```
 
 The following options are provided:

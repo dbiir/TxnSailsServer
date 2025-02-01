@@ -26,6 +26,7 @@ class OfflineService:
     model: torch.nn.Module
     optimizer = None
     epoch_size = 1000
+    workload = None
 
     # static scenarios' graph
     __gs: list[list[Graph]] = []
@@ -34,6 +35,7 @@ class OfflineService:
 
     def __init__(self, workload: str = None):
         # self.model = None
+        self.workload = workload
         if workload is not None:
             model_path = self.__model_prefix + workload + self.__model_postfix
             if os.path.exists(model_path) and os.path.isfile(model_path):
@@ -96,8 +98,6 @@ class OfflineService:
             self.optimizer = optim.Adam(self.model.parameters(), lr=0.005)
         print("len:", len(self.__gs), len(self.__g_labels))
         for i in range(len(self.__gs)):
-            # if i > 200:
-            #     continue
             idx=0
             for g in self.__gs[i]:
                 x = torch.tensor(g.nodes, dtype=torch.float).to(self.device)
@@ -113,8 +113,6 @@ class OfflineService:
                     Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y)
                 )
                 idx += 1
-                # if idx >= 2:
-                #     break;
 
         train_data, test_data = train_test_split(self.__graph_batch, test_size=0.01, random_state=37)
         train_loader = DataLoader(train_data, batch_size=16, shuffle=True)
@@ -126,7 +124,7 @@ class OfflineService:
             train_acc = self.test_epoch(test_loader)
             print(f'Epoch: {epoch:03d}, Train Acc: {train_acc:.4f}')
         
-        torch.save(self.model, self.__model_prefix + "ycsb04" + self.__model_postfix)
+        torch.save(self.model, self.__model_prefix + self.workload + self.__model_postfix)
 
     def train2(self):
         if self.model is None:
