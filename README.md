@@ -1,6 +1,8 @@
 # TxnSails
 The code base of TxnSails: Achieving Serializable **Transaction** Scheduling with **S**elf-**A**daptive **I**solation **L**evel **S**election.
 
+The technique report is available in `technique\_report.pdf` within this repository or at [arXiv:2502.00991](https://arxiv.org/abs/2502.00991). 
+
 ## Brief introduction 
 TxnSails works in the middle tier between database and application. It meets three requirements:  
 1. It requires minimal modifications to client applications and database kernels, ensuring low implementation overhead.
