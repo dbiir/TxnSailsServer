@@ -190,7 +190,7 @@ public class MetaWorker {
       System.out.println("Setting thread affinity is supported only for Linux");
       return;
     }
-    int pid = (int) Thread.currentThread().threadId();
+    int pid = (int) Thread.currentThread().getId();
     int longSize = Native.getNativeSize(Long.TYPE);
     int numLongs = (MAX_AVAILABLE_CORES + 63) / 64;
     Pointer cpuset = new Memory((long) longSize * numLongs);

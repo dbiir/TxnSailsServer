@@ -11,6 +11,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.create.table.ColDataType;
 import net.sf.jsqlparser.statement.create.table.ColumnDefinition;
@@ -111,6 +112,19 @@ public class SchemaInfo {
       return false;
     }
     return String.join(" ", specs).toUpperCase().contains("PRIMARY KEY");
+  }
+
+  public boolean isPrimaryKey(String table, Column column) {
+    for (TableInfo tableInfo : tables) {
+      if (tableInfo.getTableName().equalsIgnoreCase(table)) {
+        for (ColumnInfo col: tableInfo.getColumns().values()) {
+          if (col.isPrimaryKey() && col.getName().equalsIgnoreCase(column.getColumnName())) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   }
 
   public ColumnType getColumnTypeByName(String tableName, String colName) {

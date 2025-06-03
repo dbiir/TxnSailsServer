@@ -1,11 +1,7 @@
 package org.dbiir.txnsails.worker;
 
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Random;
+import java.util.*;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -55,6 +51,9 @@ public class OnlineWorker {
   private ValidationMeta sampleMeta = new ValidationMeta();
   private CCType lockManner = CCType.SER;
   private final SchemaInfo schema;
+  private boolean isInTransaction = false; // used for the transaction state
+  private int queryIdx = 0;
+  private String templateName = "";
 
   public OnlineWorker(WorkloadConfiguration configuration, int id) {
     this.configuration = configuration;
@@ -83,7 +82,7 @@ public class OnlineWorker {
     }
     // init the first transactionID
     this.transactionId =
-            (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
+            (int) (((System.nanoTime() << 10) | (Thread.currentThread().getId() & 0x3ff)) & mask);
     // init sample container
     this.readSet = new ArrayList<>(8);
     this.writeSet = new ArrayList<>(8);
@@ -111,10 +110,14 @@ public class OnlineWorker {
    *     template args[2:]: the params for
    */
   public String execute(String[] args, int offset) throws SQLException {
-    if (args.length < offset) return "";
+    TemplateSQL templateSQL;
+    if (args.length < offset) {
+      templateSQL = this.findTemplateSQL(args[1]);
+    } else {
+      templateSQL =
+              this.templates.get(args[offset - 2]).getSQLTemplateByIndex(Integer.parseInt(args[offset - 1]));
+    }
     StringBuilder results = new StringBuilder();
-    TemplateSQL templateSQL =
-            this.templates.get(args[offset - 2]).getSQLTemplateByIndex(Integer.parseInt(args[offset - 1]));
 
     // record the sql that need validate
     if (templateSQL.isNeedRewriteUnderRC() || templateSQL.isNeedRewriteUnderSI() || shouldSample) {
@@ -214,7 +217,7 @@ public class OnlineWorker {
     /* sample transaction if txnSails needs and choose whether sample next transaction */
     shouldSample = random.nextDouble() < SAMPLE_PROBABILITY;
     this.transactionId =
-            (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
+            (int) (((System.nanoTime() << 10) | (Thread.currentThread().getId() & 0x3ff)) & mask);
     // switch the isolation mode
     if (Adapter.getInstance().isInSwitchPhase()) {
       // System.out.println(this.toString() + " enters switch phase");
@@ -233,7 +236,7 @@ public class OnlineWorker {
       /* sample transaction if txnSails needs and choose whether sample next transaction */
       shouldSample = random.nextDouble() < SAMPLE_PROBABILITY;
       this.transactionId =
-              (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
+              (int) (((System.nanoTime() << 10) | (Thread.currentThread().getId() & 0x3ff)) & mask);
       // switch the isolation
       if (Adapter.getInstance().isInSwitchPhase()) {
         switchConnectionIsolationMode();
@@ -314,6 +317,34 @@ public class OnlineWorker {
     }
   }
 
+  /*
+    Find the templateSQL by the sql, use regex expression to match the sql.
+    Implement it by ast tree in the future.
+    If the templateName is not empty, then find the templateSQL by the templateName
+   */
+  private TemplateSQL findTemplateSQL(String sql) throws SQLException {
+    if (Objects.equals(templateName, "")) {
+      TemplateSQL templateSQL = this.templates.get(templateName).getSQLTemplateByIndex(queryIdx++);
+      if (templateSQL.getSQL().equalsIgnoreCase(sql)) {
+        return templateSQL;
+      } else {
+        throw new SQLException("SQL query does not match template: " + sql);
+      }
+    } else {
+      assert !isInTransaction;
+      isInTransaction = true;
+      for (TransactionTemplate template : this.templates.values()) {
+        TemplateSQL templateSQL = template.getSQLTemplateByIndex(0);
+        if (templateSQL.getSQL().equalsIgnoreCase(sql)) {
+          return templateSQL;
+        }
+      }
+    }
+    String msg = "The SQL is not found in the templates: " + sql;
+    System.out.println(msg);
+    throw new SQLException(msg);
+  }
+
   private void validateSingleMeta(ValidationMeta meta) throws SQLException {
     long v =
             ValidationMetaTable.getInstance()
@@ -346,6 +377,9 @@ public class OnlineWorker {
   private void clearPreviousTransactionInfo() {
     this.validationMetaIdxUnderRC = 0;
     this.validationMetaIdxUnderSI = 0;
+    this.isInTransaction = false;
+    this.queryIdx = 0;
+    this.templateName = "";
   }
 
   private void addSampleMeta(int op, int relationType, int idx) {

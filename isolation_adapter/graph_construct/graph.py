@@ -5,6 +5,10 @@ class Graph:
     edges: list = [[], []]
     edge_feature: list = []
     label: list
+    read_cnts: int = 0
+    write_cnts: int = 0
+    rw_cnt: int = 0
+    ww_cnt: int = 0
 
     def __init__(self, filepath: str, delim1: str = '#', delim2: str = ','):
         self.nodes = []
@@ -25,6 +29,8 @@ class Graph:
         read_cnt, write_cnt = int(row[0].split(delim)[1]), int(row[0].split(delim)[2])
         # latency = float(row[0].split(delim)[3])
         # success = int(row[0].split(delim)[4])
+        self.read_cnts += read_cnt
+        self.write_cnts += write_cnt
         self.nodes[-1].append([read_cnt + write_cnt])
         # process edge
         edges = row[1:]
@@ -38,6 +44,10 @@ class Graph:
             self.edges[0].append(src)
             self.edges[1].append(dst)
             self.edge_feature.append([ty, ta])
+            if ty == 2:
+                self.rw_cnt += 1
+            elif ty == 4:
+                self.ww_cnt += 1
         self.edges[0].append(1)
         self.edges[1].append(2)
         self.edge_feature.append([0, 1])

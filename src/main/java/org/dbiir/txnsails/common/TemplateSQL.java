@@ -3,12 +3,21 @@ package org.dbiir.txnsails.common;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import org.antlr.v4.runtime.CharStream;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.ParseTreeWalker;
 import org.dbiir.txnsails.analysis.ColumnInfo;
 import org.dbiir.txnsails.analysis.ConditionInfo;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
+import org.dbiir.txnsails.parse.PostgreSQLLexer;
+import org.dbiir.txnsails.parse.PostgreSQLParser;
+import org.dbiir.txnsails.parse.PostgreSQLParserBaseListener;
 import org.dbiir.txnsails.worker.MetaWorker;
 
 import lombok.Getter;
@@ -55,7 +64,12 @@ public class TemplateSQL implements Cloneable {
   @Getter private List<ConditionInfo> wherePlaceholders;
   @Getter private List<ConditionInfo> allPlaceholders;
   private boolean selectAllAttr;
+  private boolean rangeOnPrimaryKey;
+  private boolean complexSQL;
+  @Getter
+  private final HashMap<String, List<ConditionInfo>> ranges = new HashMap<>(4);
 
+  // in this prototype, we only support sql visits only one table, which covers most OLTP workloads.
   public TemplateSQL(int op, String table, String sql) {
     this.op = op;
     this.originSQL = sql;
@@ -74,10 +88,12 @@ public class TemplateSQL implements Cloneable {
     findJdbcParameters();
     // fill the column list
     fillColumnList();
+    // handle complex SQL
+    handleComplexSQL();
   }
 
   public void addUniqueKeyIndex(int idx) {
-    this.uniqueKeyIndexList.add(idx);
+    this.uniqueKeyIndexList.add(Integer.valueOf(idx));
     this.uniqueKeyNumber++;
   }
 
@@ -422,18 +438,100 @@ public class TemplateSQL implements Cloneable {
       Expression rightExpression = binaryExpression.getRightExpression();
 
       if (rightExpression instanceof JdbcParameter param1 && leftExpression instanceof Column column1) {
-        allPlaceholders.add(new ConditionInfo(column1, param1));
-        wherePlaceholders.add(new ConditionInfo(column1, param1));
+        allPlaceholders.add(new ConditionInfo(column1, param1, binaryExpression));
+        wherePlaceholders.add(new ConditionInfo(column1, param1, binaryExpression));
       }
       if (rightExpression instanceof Column column2 && leftExpression instanceof JdbcParameter param2) {
-        allPlaceholders.add(new ConditionInfo(column2, param2));
-        wherePlaceholders.add(new ConditionInfo(column2, param2));
+        allPlaceholders.add(new ConditionInfo(column2, param2, binaryExpression));
+        wherePlaceholders.add(new ConditionInfo(column2, param2, binaryExpression));
       }
 
       // Recursively check nested expressions
       findJdbcParametersInWhere(leftExpression);
       findJdbcParametersInWhere(rightExpression);
     }
+  }
+
+  private void handleComplexSQL() {
+    // Check if the SQL is complex, i.e., it has multiple tables or joins
+    if (originSQL.contains("JOIN") || originSQL.contains("UNION") || originSQL.contains("INTERSECT") ||
+        originSQL.contains("EXCEPT") || originSQL.contains("GROUP BY") || originSQL.contains("ORDER BY") ||
+        originSQL.contains("HAVING") || originSQL.contains("LIMIT") || originSQL.contains("SORT") ||
+        originSQL.contains("AVG") || originSQL.contains("COUNT")) {
+      // unsupported keyword for now
+      this.complexSQL = true;
+    } else if (containsSubquery()) {
+      // check if the SQL has subqueries or nested queries
+      this.complexSQL = true;
+    } else if (queryOnNonPrimaryKey()) {
+      // check if the predicate is not on primary key
+      this.complexSQL = true;
+    } else {
+      // check if the SQL has range queries on primary key
+      this.rangeOnPrimaryKey = containsRange();
+      this.complexSQL = false;
+    }
+  }
+
+  private boolean containsRange() {
+    boolean result = false;
+    // Check if the SQL has range queries on primary key
+    for (ConditionInfo condition : wherePlaceholders) {
+      if (condition.getColumn() != null &&
+              MetaWorker.getINSTANCE().getSchema().isPrimaryKey(table, condition.getColumn())) {
+        Expression expr = condition.getExpression();
+        if (expr instanceof GreaterThan ||
+                expr instanceof GreaterThanEquals ||
+                expr instanceof MinorThan ||
+                expr instanceof MinorThanEquals) {
+          ranges.putIfAbsent(condition.getColumn().getColumnName(), new ArrayList<>());
+          ranges.get(condition.getColumn().getColumnName()).add(condition);
+          result = true;
+        }
+      }
+    }
+    return result;
+  }
+
+  private class SubqueryListener extends PostgreSQLParserBaseListener {
+    private boolean hasSubquery = false;
+
+    @Override
+    public void enterSubquery_Op(PostgreSQLParser.Subquery_OpContext ctx) {
+      hasSubquery = true;
+    }
+
+    public boolean hasSubquery() {
+      return hasSubquery;
+    }
+  }
+
+  private boolean containsSubquery() {
+    CharStream input = CharStreams.fromString(this.originSQL);
+
+    PostgreSQLLexer lexer = new PostgreSQLLexer(input);
+
+    CommonTokenStream tokens = new CommonTokenStream(lexer);
+
+    PostgreSQLParser parser = new PostgreSQLParser(tokens);
+
+    ParseTree tree = parser.root();
+
+    ParseTreeWalker walker = new ParseTreeWalker();
+    SubqueryListener listener = new SubqueryListener();
+    walker.walk(listener, tree);
+
+    return listener.hasSubquery();
+  }
+
+  private boolean queryOnNonPrimaryKey() {
+    // Check if the SQL has conditions on non-primary key columns
+    for (ConditionInfo condition : wherePlaceholders) {
+      if (!MetaWorker.getINSTANCE().getSchema().isPrimaryKey(table, condition.getColumn())) {
+        return true; // Found a condition on a non-primary key column
+      }
+    }
+    return false; // No conditions on non-primary key columns found
   }
 
   @Override

@@ -3,7 +3,9 @@ import time
 from typing import Any
 
 import numpy as np
-from sklearn.metrics import f1_score
+import math
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.naive_bayes import GaussianNB
 import torch.nn
 import torch.nn.functional as F
 from sklearn.model_selection import KFold, train_test_split
@@ -12,6 +14,7 @@ from torch.utils.data import Subset
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 import random
+import joblib
 
 from isolation_adapter.graph_construct.graph import Graph
 from isolation_adapter.graph_training.train import GraphClassificationModel
@@ -45,15 +48,19 @@ class OfflineService:
                 self.model = None
 
     def service(self, service_name: str, *args: Any, **kwargs: Any) -> Any:
+        if len(args) == 1:
+            self.traverse_folders(args[0])
+        elif len(args) > 1:
+            for ts in args[2]:
+                fpath = args[1] + "/" + args[0] + "/" + ts
+                self.traverse_folders(fpath)
+                print(fpath)
         if service_name.lower() == "train":
-            if len(args) == 1:
-                self.traverse_folders(args[0])
-            elif len(args) > 1:
-                for ts in args[2]:
-                    fpath = args[1] + "/" + args[0] + "/" + ts
-                    self.traverse_folders(fpath)
-                    print(fpath)
             return self.train()
+        elif service_name.lower() == "train_rule":
+            return self.train_rule()
+        elif service_name.lower() == "train_bayse":
+            return self.train_bayse()
 
     def __read_label_file(self, file_path: str) -> list[float]:
         labels = []
@@ -125,6 +132,67 @@ class OfflineService:
             print(f'Epoch: {epoch:03d}, Train Acc: {train_acc:.4f}')
         
         torch.save(self.model, self.__model_prefix + self.workload + self.__model_postfix)
+
+    def train_bayse(self):
+        X, y = [], []
+        print("len:", len(self.__gs), len(self.__g_labels))
+        for i in range(len(self.__gs)):
+            # if i > 200:
+            #     continue
+            idx=0
+            for g in self.__gs[i]:
+                feature_g = [g.read_cnts, g.write_cnts, g.rw_cnt, g.ww_cnt]
+                label_g = self.__g_labels[i]
+                X.append(feature_g)
+                y.append(label_g)
+                idx += 1
+        y_labels = np.argmax(y, axis=1)
+        print(y_labels)
+        X_train, X_test, y_train, y_test = train_test_split(X, y_labels, test_size=0.2, random_state=42)
+        gnb = GaussianNB()
+
+        # train
+        # gnb.fit(X, y_labels)
+        gnb.fit(X_train, y_train)
+        y_pred = gnb.predict(X_test)
+
+        # evaluation
+        model_path = self.__model_prefix + "ycsb.pkl"
+        joblib.dump(gnb, model_path)
+
+    '''latex
+        \text{Snapshot Isolation}, & \text{if } wr < 0.2 \\
+        \text{Serializable}, & \text{if } 0.2 \leq wr \leq 0.4 \\
+        \text{Read Committed}, & \text{if } wr > 0.4
+    '''
+    def my_rule(self, w: int, r: int, l: list[float]) -> int:
+        wr = w / (w + r)
+        print(wr, l)
+        if wr < 0.2:
+            if abs(l[1] - 1) < 1e-3:
+                return 1
+            else:
+                return 0
+        elif wr <= 0.4:
+            if abs(l[0] - 1) < 1e-3:
+                return 1
+            else:
+                return 0
+        else:
+            if abs(l[2] - 1) < 1e-3:
+                return 1
+            else:
+                return 0
+
+    def train_rule(self):
+        print("len:", len(self.__gs), len(self.__g_labels))
+        cnt = 0
+        correct_cnt = 0
+        for i in range(len(self.__gs)):
+            for g in self.__gs[i]:
+                cnt += 1
+                correct_cnt += self.my_rule(g.write_cnts, g.read_cnts, self.__g_labels[i])
+        print("correct_cnt/cnt: {}/{} = {}", correct_cnt, cnt, correct_cnt / cnt)
 
     def train2(self):
         if self.model is None:

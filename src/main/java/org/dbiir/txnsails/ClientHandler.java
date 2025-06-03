@@ -51,6 +51,9 @@ class ClientHandler implements Runnable {
         try {
           switch (functionName) {
             case "execute" -> {
+              if (args.length < 2) {
+                throw new SQLException("Invalid number of arguments for execute command.");
+              }
               response = worker.execute(args, 3);
               response = "OK#" + response;
             }
