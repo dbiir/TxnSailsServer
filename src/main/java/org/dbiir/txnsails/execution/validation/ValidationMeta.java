@@ -1,5 +1,6 @@
 package org.dbiir.txnsails.execution.validation;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import lombok.Getter;
@@ -27,7 +28,12 @@ public class ValidationMeta {
   private int idForValidation; // identification for validation (mod INT_MAX for hash value)
   // key -> int
   private HashMap<String, Integer> uniqueKeys = new HashMap<>(4);
+  private List<Integer> keyList = new ArrayList<>(15); // for range query, the list of keys
   private boolean locked = false;
+  private int rangeStart = -1; // for range query, the start of the range
+  private int rangeEnd = -1; // for range query, the end of the range
+  @Getter
+  private RangeValidationLock rangeValidationLock;
 
   public void addRuntimeArgs(List<String> args, int offset) {
     List<ConditionInfo> whereConditionInfos = templateSQL.getWherePlaceholders();
@@ -38,7 +44,25 @@ public class ValidationMeta {
     for (ConditionInfo conditionInfo : whereConditionInfos) {
       int v = Integer.parseInt(args.get(offset + conditionInfo.getPlaceholderIndex()));
       uniqueKeys.put(conditionInfo.getUpperCaseColumnName(), v);
+      keyList.add(v);
     }
+    if (templateSQL.isRangeOnPrimaryKey()) {
+      RangeValidationLock rangeValidationLock = null;
+      switch (ValidationMetaTable.getInstance().getWorkload()) {
+        case "smallbank":
+        case "tpcc":
+          System.out.println("Range validation lock is not supported for smallbank and tpcc workloads.");
+          break;
+        case "ycsb":
+          rangeValidationLock = YCSBConstants.getRangeValidationLock(this.keyList, this.templateSQL);
+          break;
+        case "unknown benchmark":
+          break;
+      }
+      assert rangeValidationLock != null;
+      this.rangeValidationLock = rangeValidationLock;
+    }
+
     // calculate the id for validation
     switch (ValidationMetaTable.getInstance().getWorkload()) {
       case "smallbank":

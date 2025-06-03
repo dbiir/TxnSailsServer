@@ -17,7 +17,19 @@
 
 package org.dbiir.txnsails.common.constants;
 
+import net.sf.jsqlparser.expression.BinaryExpression;
+import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.operators.relational.GreaterThan;
+import net.sf.jsqlparser.expression.operators.relational.GreaterThanEquals;
+import net.sf.jsqlparser.expression.operators.relational.MinorThan;
+import net.sf.jsqlparser.expression.operators.relational.MinorThanEquals;
+import org.dbiir.txnsails.analysis.ConditionInfo;
+import org.dbiir.txnsails.common.TemplateSQL;
+import org.dbiir.txnsails.execution.validation.RangeValidationLock;
+
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public abstract class YCSBConstants {
 
@@ -65,6 +77,36 @@ public abstract class YCSBConstants {
       System.out.println("Unknown relation name: " + tableName);
     }
     return res;
+  }
+
+  public static RangeValidationLock getRangeValidationLock(List<Integer> keyList, TemplateSQL templateSQL) {
+    HashMap<String, List<ConditionInfo>> range = templateSQL.getRanges();
+    RangeValidationLock rangeValidationLock = null;
+    int start = Integer.MIN_VALUE;
+    int end = Integer.MAX_VALUE;
+
+    for (Map.Entry<String, List<ConditionInfo>> entry : range.entrySet()) {
+      String keyName = entry.getKey();
+      List<ConditionInfo> conditions = entry.getValue();
+      for (int i = 0; i < conditions.size(); i++) {
+        ConditionInfo condition = conditions.get(i);
+        Expression expr = condition.getExpression();
+        switch (expr) {
+          case GreaterThan greaterThan -> start = Math.max(start, keyList.get(i) + 1);
+          case GreaterThanEquals greaterThanEquals -> start = Math.max(start, keyList.get(i));
+          case MinorThan minorThan -> end = Math.max(start, keyList.get(i) - 1);
+          case MinorThanEquals minorThanEquals -> end = Math.max(start, keyList.get(i));
+          case null, default ->
+                  System.out.println("Unknown expression type in range condition: " + expr.getClass().getSimpleName());
+        }
+      }
+    }
+
+    if (start <= end) {
+      return new RangeValidationLock(start, end);
+    } else {
+      return null;
+    }
   }
 
   public static String getLatestVersion(String tableName, int validationId) {

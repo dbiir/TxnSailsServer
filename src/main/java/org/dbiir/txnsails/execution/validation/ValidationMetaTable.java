@@ -25,6 +25,7 @@ public class ValidationMetaTable {
   @Getter private String workload;
   public List<Connection> connections;
   public List<Lock> connectionGuards = new ArrayList<>();
+  private final HashMap<String, List<RangeValidationLock>> rangeValidationLocks;
 
   static {
     INSTANCE = new ValidationMetaTable();
@@ -34,6 +35,7 @@ public class ValidationMetaTable {
     validationLocks = new HashMap<>(4);
     validationBucketLocks = new HashMap<>(4);
     connectionGuards = new ArrayList<>();
+    rangeValidationLocks = new HashMap<>(4);
   }
 
   public void initHotspot(String workload, List<Connection> connections) throws SQLException {
@@ -259,6 +261,59 @@ public class ValidationMetaTable {
       tryAndAddValidationLock(table, tid, key, type, ccType);
     } catch (SQLException ex) {
       throw ex;
+    }
+  }
+
+  public void tryValidationLock(String table, long tid, long key, LockType type, CCType ccType, Range requestedRange) throws SQLException {
+    if (!validationLocks.containsKey(table)) {
+      throw new RuntimeException("unknown table name: " + table);
+    }
+
+    // 1. check range conflict
+    if (requestedRange != null) {
+      if (!tryAcquireRangeLock(table, requestedRange, type)) {
+        throw new SQLException("Range lock conflict on table " + table + " range " + requestedRange.start() + "-" + requestedRange.end());
+      }
+      // try success range lock
+      return;
+    }
+
+    // 2. try point lock
+    synchronized (rangeValidationLocks) {
+      for (RangeValidationLock rangeLock : this.rangeValidationLocks.get(table)) {
+        if (rangeLock.overlaps(key, key)) {
+          System.out.println("Point " + key + " conflicts with range lock: " + rangeLock);
+          throw new SQLException("Point lock conflict on table " + table + " key " + key);
+        }
+      }
+    }
+    tryValidationLock(table, tid, key, type, ccType);
+  }
+
+  private boolean tryAcquireRangeLock(String table, Range requestedRange, LockType type) {
+    synchronized (rangeValidationLocks) {
+      List<RangeValidationLock> rangeLocks = rangeValidationLocks.computeIfAbsent(table, k -> new ArrayList<>());
+
+      // check conflict
+      for (RangeValidationLock lock : rangeLocks) {
+        if (lock.overlaps(requestedRange.start(), requestedRange.end())) {
+          // check rw conflict
+          if (type == LockType.SH && lock.rwLock.getReadLockCount() > 0 && !lock.rwLock.isWriteLocked()) {
+            continue;
+          }
+          // conflict, NO-WAIT strategy
+          return false;
+        }
+      }
+
+      // No conflict, add interval lock
+      RangeValidationLock newLock = new RangeValidationLock(requestedRange.start(), requestedRange.end());
+      boolean locked = newLock.tryLock(type);
+      if (!locked) {
+        return false;
+      }
+      rangeLocks.add(newLock);
+      return true;
     }
   }
 

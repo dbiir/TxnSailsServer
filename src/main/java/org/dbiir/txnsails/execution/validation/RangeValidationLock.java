@@ -7,7 +7,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class RangeValidationLock {
   private final long start;
   private final long end;
-  private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
+  public final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
+
   public RangeValidationLock(long start, long end) {
     if (start > end) throw new IllegalArgumentException("start > end");
     this.start = start;
