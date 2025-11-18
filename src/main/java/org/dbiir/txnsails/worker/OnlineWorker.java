@@ -263,6 +263,16 @@ public class OnlineWorker {
   }
 
   public void commitFS() throws SQLException {
+    // 0. prepare
+    try {
+      TransactionManager.getInstance().prepare(this.transaction.getTid());
+    } catch (SQLException ex) {
+      System.out.println(Thread.currentThread().getName() + " transaction #" + this.transaction.getTid() +
+                         " prepare failed, " + ex.getMessage());
+      rollbackFS();
+      return;
+    }
+
     // 1. check the async prepare results
     if (!this.transaction.isPrepared()) {
       rollbackFS();

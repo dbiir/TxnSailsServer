@@ -28,6 +28,7 @@ import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.common.types.DatabaseType;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
 import org.dbiir.txnsails.execution.transaction.DistributionInfo;
+import org.dbiir.txnsails.execution.transaction.TransactionManager;
 import org.dbiir.txnsails.execution.utils.FileUtil;
 import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
 import org.dbiir.txnsails.partition.Partition;
@@ -72,6 +73,8 @@ public class TxnSailsServer {
     List<Connection> auxiliaryConnectionList = makeAuxiliaryConnections(workloadConfiguration);
     ValidationMetaTable.getInstance()
             .initHotspot(workloadConfiguration.getBenchmarkName(), auxiliaryConnectionList);
+
+    TransactionManager.getInstance().init(workloadConfiguration);
 
     threadPool = Executors.newFixedThreadPool(128);
     try {

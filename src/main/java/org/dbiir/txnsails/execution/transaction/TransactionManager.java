@@ -5,6 +5,7 @@ import org.dbiir.txnsails.common.TransactionStatus;
 import org.dbiir.txnsails.common.ValidationStatus;
 import org.dbiir.txnsails.common.messages.DoneRequest;
 import org.dbiir.txnsails.common.messages.FinalRequest;
+import org.dbiir.txnsails.common.messages.ValidationRequest;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
 import org.dbiir.txnsails.worker.OnlineWorker;
 
@@ -155,11 +156,10 @@ public class TransactionManager {
         p.validate(tid);
       } else {
         // generate the message and add to the client's message queue
-        // ValidationRequest req = new ValidationRequest(tid, p.getValidationSet().getValidationItems());
-        // int m = SEND_THREAD_NUM;
-        // rpcClients.get(p.getInstanceID()).get((int)((tid % m) + m) % m).addRequest(req);
-        // p.setValidationStatus(ValidationStatus.VALIDATING);
-        p.setValidationStatus(ValidationStatus.VALIDATED);
+        ValidationRequest req = new ValidationRequest(tid, p.getValidationSet().getValidationItems());
+        int m = SEND_THREAD_NUM;
+        rpcClients.get(p.getInstanceID()).get((int)((tid % m) + m) % m).addRequest(req);
+        p.setValidationStatus(ValidationStatus.VALIDATING);
       }
 
       if (distributed) {
@@ -184,7 +184,7 @@ public class TransactionManager {
         } catch (Exception e) {
           throw new RuntimeException(e);
         }
-        // System.out.println("Transaction #" + tid + " Waiting for validation #" + tid + "-" + p.getInstanceID() + " " + p.getValidationStatus());
+//        System.out.println("Transaction #" + tid + " Waiting for validation #" + tid + "-" + p.getInstanceID() + " " + p.getValidationStatus());
       }
 
       if (p.getValidationStatus() == ValidationStatus.FAILED) {
@@ -263,7 +263,6 @@ public class TransactionManager {
         rpcClients.get(p.getInstanceID()).get((int)((tid % m) + m) % m).addRequest(req);
       }
     }
-    // TODO:
     removeTransaction(transaction);
   }
 
