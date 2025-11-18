@@ -50,6 +50,10 @@ class ClientHandler implements Runnable {
         start = System.currentTimeMillis();
         try {
           switch (functionName) {
+            case "begin" -> {
+              worker.beginFS();
+              response = "OK";
+            }
             case "execute" -> {
               if (args.length < 2) {
                 throw new SQLException("Invalid number of arguments for execute command.");
@@ -58,11 +62,19 @@ class ClientHandler implements Runnable {
               response = "OK#" + response;
             }
             case "commit" -> {
-              worker.commit();
+              if (configuration.getInstances().size() > 1) {
+                worker.commitFS();
+              } else {
+                worker.commit();
+              }
               response = "OK";
             }
             case  "rollback" -> {
-              worker.rollback();
+              if (configuration.getInstances().size() > 1) {
+                worker.rollbackFS();
+              } else {
+                worker.rollback();
+              }
               response = "OK";
             }
             case "register" -> {

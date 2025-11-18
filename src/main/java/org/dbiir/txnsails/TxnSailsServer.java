@@ -8,11 +8,12 @@ import java.net.Socket;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
@@ -20,12 +21,16 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.lang3.StringUtils;
 import org.dbiir.txnsails.analysis.SchemaInfo;
+import org.dbiir.txnsails.common.DistributedConfig;
+import org.dbiir.txnsails.common.DistributedTable;
 import org.dbiir.txnsails.common.JacksonXmlConfiguration;
 import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.common.types.DatabaseType;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
+import org.dbiir.txnsails.execution.transaction.DistributionInfo;
 import org.dbiir.txnsails.execution.utils.FileUtil;
 import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
+import org.dbiir.txnsails.partition.Partition;
 import org.dbiir.txnsails.worker.Flusher;
 import org.dbiir.txnsails.worker.MetaWorker;
 
@@ -54,12 +59,16 @@ public class TxnSailsServer {
     String configFile = argsLine.getOptionValue("c").trim();
     JacksonXmlConfiguration xmlConfig = buildConfiguration(configFile);
 
+    String distributedConfigFile = argsLine.getOptionValue("g").trim();
+    DistributedConfig distributedConfig = buildDistributedConfig(distributedConfigFile);
+
     // get the number of available cores
     int availableProcessors = Runtime.getRuntime().availableProcessors();
     MetaWorker.MAX_AVAILABLE_CORES = (int) Math.ceil(availableProcessors * 0.75);
 
     AtomicInteger genWorkerId = new AtomicInteger(0);
     WorkloadConfiguration workloadConfiguration = loadConfiguration(xmlConfig);
+    loadDatabaseInfo(workloadConfiguration, distributedConfig);
     List<Connection> auxiliaryConnectionList = makeAuxiliaryConnections(workloadConfiguration);
     ValidationMetaTable.getInstance()
             .initHotspot(workloadConfiguration.getBenchmarkName(), auxiliaryConnectionList);
@@ -98,6 +107,11 @@ public class TxnSailsServer {
     return xmlMapper.readValue(new File(filename), JacksonXmlConfiguration.class);
   }
 
+  private static DistributedConfig buildDistributedConfig(String filename) throws IOException {
+    XmlMapper xmlMapper = new XmlMapper();
+    return xmlMapper.readValue(new File(filename), DistributedConfig.class);
+  }
+
   private static WorkloadConfiguration loadConfiguration(JacksonXmlConfiguration xmlConfig) {
     // ----------------------------------------------------------------
     // BEGIN LOADING BENCHMARK CONFIGURATION
@@ -128,7 +142,21 @@ public class TxnSailsServer {
     String type = xmlConfig.getConcurrencyControlType();
     wrkld.setConcurrencyControlType(type);
 
+    wrkld.setParallelExecution(xmlConfig.isParallelExecution());
+    wrkld.setInstanceID(xmlConfig.getInstanceID());
+
     return wrkld;
+  }
+
+  private static void loadDatabaseInfo(WorkloadConfiguration wrkld, DistributedConfig xmlConfig) {
+    wrkld.setInstances(xmlConfig.getInstances().getInstanceList());
+
+    Map<String,List<Integer>> tableName2DbList = new HashMap<>();
+    for (DistributedTable table: xmlConfig.getTables().getTableList()) {
+      tableName2DbList.put(table.getName(), table.getLocations().getLocationList());
+    }
+    wrkld.setTableName2DbList(tableName2DbList);
+    DistributionInfo.setTableName2DbList(tableName2DbList);
   }
 
   private static List<Connection> makeAuxiliaryConnections(WorkloadConfiguration workConf)

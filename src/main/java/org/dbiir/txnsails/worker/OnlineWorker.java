@@ -2,6 +2,8 @@ package org.dbiir.txnsails.worker;
 
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.Future;
+import java.util.logging.Logger;
 
 import lombok.Getter;
 import lombok.Setter;
@@ -9,20 +11,25 @@ import net.sf.jsqlparser.schema.Column;
 import org.apache.commons.lang3.StringUtils;
 import org.dbiir.txnsails.analysis.ConditionInfo;
 import org.dbiir.txnsails.analysis.SchemaInfo;
-import org.dbiir.txnsails.common.TemplateSQL;
-import org.dbiir.txnsails.common.TransactionStatus;
-import org.dbiir.txnsails.common.TransactionTemplate;
+import org.dbiir.txnsails.common.*;
 import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.common.types.ColumnType;
 import org.dbiir.txnsails.common.types.LockType;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
+import org.dbiir.txnsails.execution.transaction.DistributionInfo;
+import org.dbiir.txnsails.execution.transaction.Participant;
+import org.dbiir.txnsails.execution.transaction.Transaction;
+import org.dbiir.txnsails.execution.transaction.TransactionManager;
 import org.dbiir.txnsails.execution.utils.RWRecord;
 import org.dbiir.txnsails.execution.utils.SQLStmt;
+import org.dbiir.txnsails.execution.utils.TransactionIdGenerator;
 import org.dbiir.txnsails.execution.validation.TransactionCollector;
 import org.dbiir.txnsails.execution.validation.ValidationMeta;
 import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
 
 public class OnlineWorker {
+  private static final Logger logger = Logger.getLogger(OnlineWorker.class.getName());
+  public static final int MAX_INSTANCE_NUM = 8;
   protected Connection conn = null;
   private WorkloadConfiguration configuration = null;
   private final Random random = new Random();
@@ -54,21 +61,48 @@ public class OnlineWorker {
   private boolean isInTransaction = false; // used for the transaction state
   private int queryIdx = 0;
   private String templateName = "";
+  private final boolean distributed;
+  private Connection[] connections = new Connection[MAX_INSTANCE_NUM];
+  protected boolean[] connectionUsed = new boolean[MAX_INSTANCE_NUM];
+  protected List<Future<AsyncResultWrapper>> futureList = new ArrayList<>(MAX_INSTANCE_NUM);
+  protected AsyncResultWrapper[] resultList = new AsyncResultWrapper[MAX_INSTANCE_NUM];
+  private Participant[] participants = new Participant[MAX_INSTANCE_NUM];
+  protected boolean fineSerial = false;
+  protected int partitionCount;
+  private final Transaction transaction;
 
   public OnlineWorker(WorkloadConfiguration configuration, int id) {
     this.configuration = configuration;
     this.id = id;
     // init the connection
     try {
-      this.conn = makeConnection();
-      this.conn.setAutoCommit(false);
-      this.ccType = configuration.getConcurrencyControlType();
-      switch (ccType) {
-        case RC, RC_TAILOR ->
-                this.conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
-        case SI, SI_TAILOR ->
-                this.conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
-        case SER -> this.conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+      if (configuration.getInstances().size() <= 1) {
+        distributed = false;
+        this.conn = makeConnection();
+        this.conn.setAutoCommit(false);
+        this.ccType = configuration.getConcurrencyControlType();
+        switch (ccType) {
+          case RC, RC_TAILOR ->
+                  this.conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+          case SI, SI_TAILOR ->
+                  this.conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+          case SER -> this.conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+        }
+      } else {
+        distributed = true;
+        for (int i = 1; i <= configuration.getInstances().size(); i++) {
+          Connection instanceConnection;
+          DBInstance instance = configuration.getInstances().get(i);
+          if(StringUtils.isEmpty(instance.getUsername())){
+            instanceConnection = DriverManager.getConnection(instance.getUrl());
+          }else{
+            instanceConnection = DriverManager.getConnection(instance.getUrl(), instance.getUsername(),
+                    instance.getPassword());
+          }
+          connections[i] = instanceConnection;
+          resultList[i] = new AsyncResultWrapper(connections[i], i);
+          // partitionIdToConnection.put(i, benchmark.partitionMetas[i].getConnection(id));
+        }
       }
     } catch (SQLException ex) {
       throw new RuntimeException("Failed to connect to database", ex);
@@ -82,7 +116,11 @@ public class OnlineWorker {
     }
     // init the first transactionID
     this.transactionId =
-            (int) (((System.nanoTime() << 10) | (Thread.currentThread().getId() & 0x3ff)) & mask);
+            (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
+    this.transaction = new Transaction(transactionId);
+    for (int i = 0; i < MAX_INSTANCE_NUM; i++) {
+      this.participants[i] = new Participant(i, this.connections[i]);
+    }
     // init sample container
     this.readSet = new ArrayList<>(8);
     this.writeSet = new ArrayList<>(8);
@@ -156,12 +194,26 @@ public class OnlineWorker {
       }
     }
 
+
+    sampleMeta.setTemplateSQL(templateSQL);
+    sampleMeta.addRuntimeArgs(List.of(args), offset);
+    int instanceId = DistributionInfo.getINSTANCE().getInstanceID(sampleMeta);
+
     String executeSQL = templateSQL.getSQL();
+    boolean firstUse = false;
+    if (!connectionUsed[instanceId]) {
+      // append `BEGIN' statement to this connection
+      executeSQL = "BEGIN; " + executeSQL;
+      connectionUsed[instanceId] = true;
+      this.transaction.addParticipant(this.participants[instanceId]);
+      firstUse = true;
+    }
+
     // execute the sql
     try (PreparedStatement stmtc =
                  this.getPreparedStatement(conn, new SQLStmt(executeSQL), args, offset, templateSQL)) {
       stmtc.setQueryTimeout(1);
-      try (ResultSet rs = stmtc.executeQuery()) {
+      try (ResultSet rs = firstUse ? omitBeginStatement(stmtc) : stmtc.executeQuery()) {
         int v = -1;
         List<List<String>> rows = new ArrayList<>(2);
         while (rs.next()) {
@@ -179,7 +231,7 @@ public class OnlineWorker {
         // parse and wrap the results
         results.append(wrapResults(rows));
         // record the version if it needs, support scan-based
-        if (templateSQL.isNeedRewriteUnderRC()) {
+        if (templateSQL.isNeedRewriteUnderRC() || distributed) {
           validationMetaUnderRC[validationMetaIdxUnderRC - 1].setOldVersions(v);
           if (templateSQL.isNeedRewriteUnderSI()) {
             validationMetaUnderSI[validationMetaIdxUnderSI - 1].setOldVersions(v);
@@ -195,6 +247,43 @@ public class OnlineWorker {
 
     return results.toString();
   }
+
+  private ResultSet omitBeginStatement(PreparedStatement stmt) throws SQLException {
+    boolean hasResultSet = stmt.execute();
+    ResultSet finalResultSet = null;
+    do {
+      if (hasResultSet) {
+        finalResultSet = stmt.getResultSet();
+        break;
+      }
+      hasResultSet = stmt.getMoreResults();
+    } while (hasResultSet || stmt.getUpdateCount() != -1);
+
+    return finalResultSet;
+  }
+
+  public void commitFS() throws SQLException {
+    // 1. check the async prepare results
+    if (!this.transaction.isPrepared()) {
+      rollbackFS();
+      return;
+    }
+    // 2. commit or rollback a transaction
+    TransactionManager.getInstance().commit(this.transaction.getTid(), this.resultList);
+    for (AsyncResultWrapper result: this.resultList) {
+      if (!result.isSuccess()) {
+        logger.warning(Thread.currentThread().getName() + " transaction #" + this.transaction.getTid() +
+                        " commit failed after preparation, " + result.getException().getMessage());
+      }
+    }
+
+    // 3. reset the transaction meta
+    resetTransactionMeta();
+
+    // 4. remove transaction from TransactionManager
+    TransactionManager.getInstance().removeTransaction(this.transaction);
+  }
+
 
   public void commit() throws SQLException {
     /* validate before commitment, release validation locks after commitment */
@@ -224,6 +313,13 @@ public class OnlineWorker {
       switchConnectionIsolationMode();
     }
     // System.out.println(this.toString() + " return commit()");
+  }
+
+  public void beginFS() {
+    long tid = TransactionIdGenerator.generateTransactionId(id);
+    this.transaction.init(tid);
+    TransactionManager.getInstance().addTransaction(this.transaction);
+    logger.info(Thread.currentThread().getName() + " transaction #" + tid + " begin.");
   }
 
   public void rollback() throws SQLException {
@@ -315,6 +411,34 @@ public class OnlineWorker {
         validateSingleMeta(validationMetaUnderRC[i]);
       }
     }
+  }
+
+  public void rollbackFS() throws SQLException {
+    assert !this.transaction.isPrepared();
+    TransactionManager.getInstance().rollback(this.transaction.getTid(), this.resultList);
+    for (AsyncResultWrapper result: this.resultList) {
+      if (!result.isSuccess()) {
+        logger.warning(Thread.currentThread().getName() + " transaction #" +
+                        this.transaction.getTid() + "rollback failed, " + result.getException().getMessage());
+        // reset the connection for this participant
+      }
+    }
+
+    // reset the transaction meta
+    resetTransactionMeta();
+
+    // remove transaction from TransactionManager
+    TransactionManager.getInstance().removeTransaction(this.transaction);
+  }
+
+  private void resetTransactionMeta() {
+    clearPreviousTransactionInfo();
+    for (int i = 0; i < MAX_INSTANCE_NUM; i++) {
+      this.connectionUsed[i] = false;
+      this.participants[i].reset();
+      this.resultList[i].reset();
+    }
+    this.transaction.reset();
   }
 
   /*

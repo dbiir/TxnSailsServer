@@ -4,6 +4,10 @@ import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
 import lombok.Getter;
 import lombok.Setter;
+import org.dbiir.txnsails.partition.PartitionConfig;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Setter
 @Getter
@@ -56,6 +60,15 @@ public class JacksonXmlConfiguration {
   @JacksonXmlProperty(localName = "scalefactor")
   private double scalefactor;
 
+  @JacksonXmlProperty(localName = "parallelExecution")
+  private boolean parallelExecution;
+
+  @JacksonXmlProperty(localName = "partitions")
+  private List<PartitionConfig> partitions;
+
+  @JacksonXmlProperty(localName = "instanceId")
+  private int instanceID;
+
   // Initialize values
   public JacksonXmlConfiguration() {
     this.type = "postgresql";
@@ -73,5 +86,8 @@ public class JacksonXmlConfiguration {
     this.randomSeed = 1;
     this.maxRetries = 3;
     this.scalefactor = 1.0;
+    this.parallelExecution = false;
+    this.partitions = new ArrayList<>();
+    this.instanceID = 0;
   }
 }

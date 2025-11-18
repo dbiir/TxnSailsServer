@@ -18,32 +18,45 @@
 package org.dbiir.txnsails.execution;
 
 import java.sql.Connection;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import lombok.Getter;
 import lombok.Setter;
+import org.dbiir.txnsails.common.DBInstance;
 import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.common.types.DatabaseType;
 import org.dbiir.txnsails.common.JacksonXmlConfiguration;
+import org.dbiir.txnsails.partition.Partition;
+import org.dbiir.txnsails.partition.PartitionConfig;
 import org.dbiir.txnsails.worker.Adapter;
 
+@Setter @Getter
 public class WorkloadConfiguration {
 
-  @Setter @Getter private DatabaseType databaseType;
-  @Setter @Getter private String benchmarkName;
-  @Setter @Getter private String url;
-  @Setter @Getter private String username;
-  @Setter @Getter private String password;
-  @Getter @Setter private String driverClass;
-  @Getter @Setter private int batchSize;
-  @Getter @Setter private int maxRetries;
-  @Getter @Setter private int randomSeed = -1;
-  @Setter @Getter private double scaleFactor = 1.0;
-  @Getter @Setter private double selectivity = -1.0;
-  @Setter @Getter private int terminals;
-  @Setter @Getter private JacksonXmlConfiguration xmlConfig = null;
+  private DatabaseType databaseType;
+  private String benchmarkName;
+  private String url;
+  private String username;
+  private String password;
+  private String driverClass;
+  private int batchSize;
+  private int maxRetries;
+  private int randomSeed = -1;
+  private double scaleFactor = 1.0;
+  private double selectivity = -1.0;
+  private int terminals;
+  private JacksonXmlConfiguration xmlConfig = null;
+  private boolean parallelExecution;
+  private int instanceID;
+  private List<DBInstance> instances = new ArrayList<>();
+  private Map<String,List<Integer>> tableName2DbList = new HashMap<>();
 
   @Getter
   private int isolationMode =
-      Connection.TRANSACTION_SERIALIZABLE; // always providing serializable execution
+          Connection.TRANSACTION_SERIALIZABLE; // always providing serializable execution
 
   @Getter private CCType concurrencyControlType = CCType.SER;
 
@@ -136,34 +149,34 @@ public class WorkloadConfiguration {
   @Override
   public String toString() {
     return "WorkloadConfiguration{"
-        + ", databaseType="
-        + databaseType
-        + ", benchmarkName='"
-        + benchmarkName
-        + '\''
-        + ", url='"
-        + url
-        + '\''
-        + ", username='"
-        + username
-        + '\''
-        + ", password='"
-        + password
-        + '\''
-        + ", driverClass='"
-        + driverClass
-        + '\''
-        + ", batchSize="
-        + batchSize
-        + ", maxRetries="
-        + maxRetries
-        + ", scaleFactor="
-        + scaleFactor
-        + ", selectivity="
-        + selectivity
-        + ", terminals="
-        + terminals
-        + '\''
-        + '}';
+            + ", databaseType="
+            + databaseType
+            + ", benchmarkName='"
+            + benchmarkName
+            + '\''
+            + ", url='"
+            + url
+            + '\''
+            + ", username='"
+            + username
+            + '\''
+            + ", password='"
+            + password
+            + '\''
+            + ", driverClass='"
+            + driverClass
+            + '\''
+            + ", batchSize="
+            + batchSize
+            + ", maxRetries="
+            + maxRetries
+            + ", scaleFactor="
+            + scaleFactor
+            + ", selectivity="
+            + selectivity
+            + ", terminals="
+            + terminals
+            + '\''
+            + '}';
   }
 }

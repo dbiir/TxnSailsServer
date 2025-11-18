@@ -1,10 +1,8 @@
 # TxnSails
-The code base of TxnSails: Achieving Serializable **Transaction** Scheduling with **S**elf-**A**daptive **I**solation **L**evel **S**election.
+The code base of "TxnSails: Achieving Serializable **Transaction** Scheduling with **S**elf-**A**daptive **I**solation **L**evel **S**election" and its distributed extension.
 
-The technique report is available in `technique\_report.pdf` within this repository or at [arXiv:2502.00991](https://arxiv.org/abs/2502.00991). 
-
-## Brief introduction 
-TxnSails works in the middle tier between database and application. It meets three requirements:  
+## Brief introduction
+TxnSails works in the middle tier between database and application. It meets three requirements:
 1. It requires minimal modifications to client applications and database kernels, ensuring low implementation overhead.
 2. It must be efficient to handle dangerous structures under various lower isolation levels while ensuring SER.
 3. It must adaptively select the optimal isolation level to maximize performance in response to dynamic workloads.
@@ -17,7 +15,7 @@ The architecture of TxnSails is illustrated in figure below.
 
 ## Code description
 ### Code Navigation
-Key modules and corresponding source code: 
+Key modules and corresponding source code:
 1. `Analyzer` - src/.../worker/OfflineWorker, src/.../analysis/*
 2. `Executor` - src/.../worker/OnlineWorker, src/.../execution/validation/*
 3. `Adapter` - src/.../worker/{Adapter, Flusher}, src/.../execution/sample/\*, isolation\_adapter/\* (Python)
@@ -25,36 +23,36 @@ Key modules and corresponding source code:
     - `isolation\_adapter/graph\_training`: graph embedding and classfication
     - `isolation\_adapter/services`: offline training service and online prediction service
     - `adapter.py`: connection
-4. `Client` - txnSailsClient 
+4. `Client` - txnSailsClient
 
 *Note: `...` represents the filepath `main/java/org/dbiir/txnsails`.*
 
 ### Implementation
 **Analyzer**: We first implemented a *StaticDependencyGraph* class that takes the transaction templates as input and builds a static dependency graph. Then, the graph is fed into the *ChordAbsentCycleFinder* class to detect cycles with characteristics defined in theorem 2.1. At last, it identifies the transaction templates involving static vulnerable dependencies and stores the results in MetaWorker instance.
 
-**Executor**: It invokes *SQLRewrite()* function to rewrite queries, selecting the version of the record if its template is involved in static vulnerable dependencies. It then sends the rewritten query to the database and records the *vid* column. Additionally, we implement a crucial data structure, *ValidationMetaTable*, which is initialized before any transactions are received to perform middle-tier validation in single- or cross-isolation scenarios. It is organized as a hash table, with each bucket representing a list of *ValidationMeta*, including *validation lock*, *latest version*, and *lease* information. A dedicated thread is responsible for garbage collection of expired meta entries by comparing the *lease* and real-time system clock. Furthermore, we implement a *WAIT-DIE* strategy within*ValidationMetaTable* to prevent deadlocks. 
+**Executor**: It invokes *SQLRewrite()* function to rewrite queries, selecting the version of the record if its template is involved in static vulnerable dependencies. It then sends the rewritten query to the database and records the *vid* column. Additionally, we implement a crucial data structure, *ValidationMetaTable*, which is initialized before any transactions are received to perform middle-tier validation in single- or cross-isolation scenarios. It is organized as a hash table, with each bucket representing a list of *ValidationMeta*, including *validation lock*, *latest version*, and *lease* information. A dedicated thread is responsible for garbage collection of expired meta entries by comparing the *lease* and real-time system clock. Furthermore, we implement a *WAIT-DIE* strategy within*ValidationMetaTable* to prevent deadlocks.
 
-**Adapter**: We first implemented a *TransactionCollector* class that collects the read and write sets for transactions adhering to Monte Carlo sampling. Then, we design a *Flusher* thread to flush the runtime dependency graph. Finally, *Adapter* is implemented with the help of the *torch\_geometric* library. It inputs the runtime dependency group and outputs the optimal isolation level. To ensure cross-platform compatibility and efficiency, the Python and Java components communicate via *sockets*. 
+**Adapter**: We first implemented a *TransactionCollector* class that collects the read and write sets for transactions adhering to Monte Carlo sampling. Then, we design a *Flusher* thread to flush the runtime dependency graph. Finally, *Adapter* is implemented with the help of the *torch\_geometric* library. It inputs the runtime dependency group and outputs the optimal isolation level. To ensure cross-platform compatibility and efficiency, the Python and Java components communicate via *sockets*.
 
 
 
 ## Client Libs
 ### Interface description
-We provide four apis for clients: 
+We provide four apis for clients:
 
 - `register() -> (status, serverSideIdx)`:
 - `analyse() -> (status)`:
 - `execute() -> (status, results/errorMsg)`:
-- `commit()/rollback() -> (status)`: 
+- `commit()/rollback() -> (status)`:
 
 Application developer should rebuild a portion of their code to utilize TxnSails' capabilities and TxnSails can automatically guarantee the serializable.
 Note that we do not modify the application workload to achieve serializable, for example, we do not either promote reads to writes or introduce outside lock manager.
-We would continue to improve above apis and TxnSails to support serializable transactions for more heterogeneous database systems, 
+We would continue to improve above apis and TxnSails to support serializable transactions for more heterogeneous database systems,
 thereby further reducing application development costs.
 
 
 ### How to use
-1. Modify application code according to above interfaces. 
+1. Modify application code according to above interfaces.
 2. Register the transaction templates into TxnSails.
 
 **Online workflow**:
@@ -64,18 +62,18 @@ thereby further reducing application development costs.
 1. generate random workload configurations
 2. run each workload under different isolation
     - sample the runtime dependency graph
-3. label the runtime dependency graph with the optimal isolation level according to the performance. 
+3. label the runtime dependency graph with the optimal isolation level according to the performance.
 
 **The isolation level selection and transition is transparent to clients and applications.**
 
 ## Evaluation
 ### Environment and Configuration
-We conducted our experiments on two in-cluster servers, each equipped with an Intel(R) Xeon(R) Platinum 8361HC CPU @ 2.60GHz processor, which includes 24 physical cores, 64 GB of DRAM, and a 500 GB SSD. 
-The operating system was CentOS Linux release 7.9. 
+We conducted our experiments on two in-cluster servers, each equipped with an Intel(R) Xeon(R) Platinum 8361HC CPU @ 2.60GHz processor, which includes 24 physical cores, 64 GB of DRAM, and a 500 GB SSD.
+The operating system was CentOS Linux release 7.9.
 
-We utilize BenchBase as our benchmark simulator, deploying it on a single server. We modify it to interface with TxnSails. By default, the experiments are conducted using 128 client terminals. The sql statement is listed in `BENCHMARK_SQL_Statement.pdf`. 
+We utilize BenchBase as our benchmark simulator, deploying it on a single server. We modify it to interface with TxnSails. By default, the experiments are conducted using 128 client terminals. The sql statement is listed in `BENCHMARK_SQL_Statement.pdf`.
 
-We deployed PostgreSQL 15.2 as the database engine. For our database configuration, we allocated a buffer pool size of 24GB, limited the maximum number of connections to 2000, and established a lock wait timeout of 100 ms. To eliminate network-related variables from affecting the results, both TxnSails and PostgreSQL were deployed on another server. 
+We deployed PostgreSQL 15.2 as the database engine. For our database configuration, we allocated a buffer pool size of 24GB, limited the maximum number of connections to 2000, and established a lock wait timeout of 100 ms. To eliminate network-related variables from affecting the results, both TxnSails and PostgreSQL were deployed on another server.
 
 ### How to Build
 TxnSails requires JDK 21 and Maven 3.9+ for compilation. To run the build scripts, you need to ensure that Python 3.9+ is installed. Meanwhile, the packages used in Python are listed as following.
@@ -98,10 +96,10 @@ You can run the following command to build TxnSails server:
 mvn clean package -Dmaven.javadoc.skip=true -Dcheckstyle.skip=true -Drat.skip=true -Djacoco.skip=true -DskipITs -DskipTests # in your server machine
 ```
 
-This command will compile the project and the fat jar can be found in `target` folder. 
+This command will compile the project and the fat jar can be found in `target` folder.
 
 ### How to Run
-We provide python scripts located in the `scripts/` folder to generate the corresponding `.xml` configuration files in both server and client. Before running the tests, you should modify the information in the python script to ensure the generation of configuration files that meet the requirements, including the JDBC connection URL to connect to the database, and the database username and password. Your should generate configuration in both server and client. 
+We provide python scripts located in the `scripts/` folder to generate the corresponding `.xml` configuration files in both server and client. Before running the tests, you should modify the information in the python script to ensure the generation of configuration files that meet the requirements, including the JDBC connection URL to connect to the database, and the database username and password. Your should generate configuration in both server and client.
 
 For example, you can run the following command generate your ycsb configuration files:
 
@@ -142,6 +140,6 @@ You can run the command to execute the hotspot-128 test of the SmallBank benchma
 python3 runTxnSailsServer.py -w smallbank -f hotspot-256 -e postgresql -p online
 ```
 
-Note: 
-1. You should replace the `prefix_cmd_local`, `prefix_cmd_remote_java`, `remote_client_dir`, `config_prefix`, and `remote_machine_ip` with your own configuration. 
+Note:
+1. You should replace the `prefix_cmd_local`, `prefix_cmd_remote_java`, `remote_client_dir`, `config_prefix`, and `remote_machine_ip` with your own configuration.
 2. Generate the configuration in both client and server.
