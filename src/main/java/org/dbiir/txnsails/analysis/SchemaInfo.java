@@ -3,13 +3,11 @@ package org.dbiir.txnsails.analysis;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
-import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.statement.Statement;
@@ -29,7 +27,7 @@ public class SchemaInfo {
   public SchemaInfo(String fileName) {
     this.tables = new ArrayList<>();
     processSQLStatements(readSQLFromFile(fileName));
-//      extractSchemaFromFile(fileName);
+    //      extractSchemaFromFile(fileName);
   }
 
   private String readSQLFromFile(String filePath) {
@@ -96,15 +94,28 @@ public class SchemaInfo {
         colDataType.setArgumentsStringList(null);
       }
 
-      currentTable.addColumn(new ColumnInfo(columnDefinition.getColumnName(),
+      currentTable.addColumn(
+          new ColumnInfo(
+              columnDefinition.getColumnName(),
               colDataType.toString(),
-              isPrimaryKey(columnDefinition.getColumnSpecs())));
-      System.out.println("Column: " + columnDefinition.getColumnName() + ", Data Type: " + colDataType);
+              isPrimaryKey(columnDefinition.getColumnSpecs())
+                  || (createTable.getIndexes() != null
+                      && createTable.getIndexes().stream()
+                          .anyMatch(
+                              index ->
+                                  "PRIMARY KEY".equalsIgnoreCase(index.getType())
+                                      && index.getColumnsNames().stream()
+                                          .anyMatch(
+                                              name ->
+                                                  name.equalsIgnoreCase(
+                                                      columnDefinition.getColumnName()))))));
+      System.out.println(
+          "Column: " + columnDefinition.getColumnName() + ", Data Type: " + colDataType);
     }
 
     // Print the modified CREATE TABLE statement
     tables.add(currentTable);
-//    System.out.println("Modified CREATE TABLE SQL: " + createTable.toString());
+    //    System.out.println("Modified CREATE TABLE SQL: " + createTable.toString());
   }
 
   private boolean isPrimaryKey(List<String> specs) {
@@ -117,7 +128,7 @@ public class SchemaInfo {
   public boolean isPrimaryKey(String table, Column column) {
     for (TableInfo tableInfo : tables) {
       if (tableInfo.getTableName().equalsIgnoreCase(table)) {
-        for (ColumnInfo col: tableInfo.getColumns().values()) {
+        for (ColumnInfo col : tableInfo.getColumns().values()) {
           if (col.isPrimaryKey() && col.getName().equalsIgnoreCase(column.getColumnName())) {
             return true;
           }

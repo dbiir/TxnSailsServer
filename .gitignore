@@ -42,3 +42,6 @@ build/
 metas/
 adapter.log
 test_function.py
+
+# Durable distributed transaction identity checkpoints
+.txnsails/

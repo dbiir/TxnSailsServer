@@ -1,54 +1,57 @@
 package org.dbiir.txnsails.execution.validation;
 
-import lombok.Getter;
-import org.dbiir.txnsails.common.types.LockType;
-
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import org.dbiir.txnsails.common.types.LockType;
 
+/** One validation item per logical row, with read and write versions kept separately. */
 public class ValidationSet {
   private final List<ValidationItem> items;
-  @Getter
-  private int itemCount;
 
   public ValidationSet(int capacity) {
-    this.items = new ArrayList<>(capacity);
-    this.itemCount = 0;
-    for (int i = 0; i < capacity; i++) {
-      this.items.add(new ValidationItem());
+    items = new ArrayList<>(capacity);
+  }
+
+  public int getItemCount() {
+    return items.size();
+  }
+
+  public void addValidationItems(List<ValidationItem> additions) throws SQLException {
+    for (ValidationItem item : additions) addValidationItem(item);
+  }
+
+  public void addValidationItem(ValidationItem addition) throws SQLException {
+    for (ValidationItem item : items) {
+      if (item.getIdentity().equals(addition.getIdentity())
+          && item.getRelationName().equals(addition.getRelationName())) {
+        item.merge(addition);
+        return;
+      }
     }
+    ValidationItem copy = new ValidationItem();
+    copy.copy(addition);
+    items.add(copy);
   }
 
-  public void addValidationItems(List<ValidationItem> validationItems) {
-    for (ValidationItem item: validationItems) {
-      this.items.get(itemCount).copy(item);
-      this.itemCount++;
-    }
-  }
-
-  public void addValidationItem(ValidationItem validationItem) {
-    this.items.get(itemCount).copy(validationItem);
-    this.itemCount++;
-  }
-
-  public void addValidationItem(String relationName, long key, LockType lockType, long oldVersion) {
-    this.items.get(itemCount).copy(relationName, key, lockType, oldVersion);
-    this.itemCount++;
+  public void addValidationItem(String table, long key, LockType type, long version)
+      throws SQLException {
+    addValidationItem(new ValidationItem(table, key, type, version));
   }
 
   public List<ValidationItem> getValidationItems() {
-    return this.items.subList(0, itemCount);
+    return List.copyOf(items);
   }
 
-  public ValidationItem get(int idx) {
-    return this.items.get(idx);
+  public ValidationItem get(int index) {
+    return items.get(index);
   }
 
   public void reset() {
-    this.itemCount = 0;
+    items.clear();
   }
 
   public boolean isEmpty() {
-    return itemCount == 0;
+    return items.isEmpty();
   }
 }

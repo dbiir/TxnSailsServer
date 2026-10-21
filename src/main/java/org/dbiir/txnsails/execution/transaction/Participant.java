@@ -1,5 +1,8 @@
 package org.dbiir.txnsails.execution.transaction;
 
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
 import org.dbiir.txnsails.common.TransactionStatus;
@@ -8,10 +11,6 @@ import org.dbiir.txnsails.common.types.LockType;
 import org.dbiir.txnsails.execution.validation.ValidationItem;
 import org.dbiir.txnsails.execution.validation.ValidationSet;
 
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.util.List;
-
 @Getter
 @Setter
 public class Participant {
@@ -19,10 +18,14 @@ public class Participant {
   private int instanceID; // the instance id of the participant
   private TransactionStatus status;
   private Connection connection;
-  private ValidationStatus validationStatus;
+  private volatile ValidationStatus validationStatus;
   private ValidationSet validationSet;
 
-  public Participant(int instanceId, TransactionStatus status, Connection connection, ValidationSet validationSet) {
+  public Participant(
+      int instanceId,
+      TransactionStatus status,
+      Connection connection,
+      ValidationSet validationSet) {
     this.instanceID = instanceId;
     this.status = status;
     this.connection = connection;
@@ -46,15 +49,16 @@ public class Participant {
     this.validationStatus = ValidationStatus.VALIDATION_STATUS_NUM;
   }
 
-  public void addValidationItem(ValidationItem item) {
+  public void addValidationItem(ValidationItem item) throws SQLException {
     this.validationSet.addValidationItem(item);
   }
 
-  public void addValidationItem(String relationName, long key, LockType lockType, long oldVersion) {
+  public void addValidationItem(String relationName, long key, LockType lockType, long oldVersion)
+      throws SQLException {
     this.validationSet.addValidationItem(relationName, key, lockType, oldVersion);
   }
 
-  public void addValidationItems(List<ValidationItem> items) {
+  public void addValidationItems(List<ValidationItem> items) throws SQLException {
     this.validationSet.addValidationItems(items);
   }
 
@@ -64,10 +68,11 @@ public class Participant {
     for (int validationPhase = 0; validationPhase < itemCount; validationPhase++) {
       try {
         validationSet.get(validationPhase).validate(tid);
-      } catch (SQLException ex) {
+      } catch (SQLException | RuntimeException ex) {
         releaseValidationLocks(tid, validationPhase);
         validationStatus = ValidationStatus.FAILED;
-        throw ex;
+        if (ex instanceof SQLException sql) throw sql;
+        throw new SQLException("Participant validation failed", "40001", ex);
       }
     }
     validationStatus = ValidationStatus.VALIDATED;

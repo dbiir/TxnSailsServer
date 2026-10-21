@@ -6,20 +6,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
-
-import org.antlr.v4.runtime.CharStream;
-import org.antlr.v4.runtime.CharStreams;
-import org.antlr.v4.runtime.CommonTokenStream;
-import org.antlr.v4.runtime.tree.ParseTree;
-import org.antlr.v4.runtime.tree.ParseTreeWalker;
-import org.dbiir.txnsails.analysis.ColumnInfo;
-import org.dbiir.txnsails.analysis.ConditionInfo;
-import org.dbiir.txnsails.common.constants.YCSBConstants;
-import org.dbiir.txnsails.parse.PostgreSQLLexer;
-import org.dbiir.txnsails.parse.PostgreSQLParser;
-import org.dbiir.txnsails.parse.PostgreSQLParserBaseListener;
-import org.dbiir.txnsails.worker.MetaWorker;
-
 import lombok.Getter;
 import lombok.Setter;
 import net.sf.jsqlparser.JSQLParserException;
@@ -48,6 +34,18 @@ import net.sf.jsqlparser.statement.select.SelectExpressionItem;
 import net.sf.jsqlparser.statement.select.SelectItem;
 import net.sf.jsqlparser.statement.update.Update;
 import net.sf.jsqlparser.statement.update.UpdateSet;
+import org.antlr.v4.runtime.CharStream;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.tree.ParseTreeWalker;
+import org.dbiir.txnsails.analysis.ColumnInfo;
+import org.dbiir.txnsails.analysis.ConditionInfo;
+import org.dbiir.txnsails.common.constants.YCSBConstants;
+import org.dbiir.txnsails.parse.PostgreSQLLexer;
+import org.dbiir.txnsails.parse.PostgreSQLParser;
+import org.dbiir.txnsails.parse.PostgreSQLParserBaseListener;
+import org.dbiir.txnsails.worker.MetaWorker;
 
 @Getter
 public class TemplateSQL implements Cloneable {
@@ -66,14 +64,13 @@ public class TemplateSQL implements Cloneable {
   private boolean selectAllAttr;
   private boolean rangeOnPrimaryKey;
   private boolean complexSQL;
-  @Getter
-  private final HashMap<String, List<ConditionInfo>> ranges = new HashMap<>(4);
+  @Getter private final HashMap<String, List<ConditionInfo>> ranges = new HashMap<>(4);
 
   // in this prototype, we only support sql visits only one table, which covers most OLTP workloads.
   public TemplateSQL(int op, String table, String sql) {
     this.op = op;
     this.originSQL = sql;
-    this.table = table;
+    this.table = table.toLowerCase(java.util.Locale.ROOT);
     this.columnList = new ArrayList<>(4);
     this.needRewriteUnderSI = false;
     this.needRewriteUnderRC = false;
@@ -164,9 +161,10 @@ public class TemplateSQL implements Cloneable {
       }
     } catch (Exception e) {
       System.out.println(e.toString());
-      System.out.println(Arrays.stream(e.getStackTrace())
-          .map(StackTraceElement::toString)
-          .collect(Collectors.joining("\n")));
+      System.out.println(
+          Arrays.stream(e.getStackTrace())
+              .map(StackTraceElement::toString)
+              .collect(Collectors.joining("\n")));
     }
   }
 
@@ -175,7 +173,7 @@ public class TemplateSQL implements Cloneable {
       return;
     }
 
-    for (SelectItem selectItem: selectItemList) {
+    for (SelectItem selectItem : selectItemList) {
       if (selectItem instanceof SelectExpressionItem selectExpressionItem) {
         if (selectExpressionItem.getExpression() instanceof Column column) {
           columnList.add(column);
@@ -222,7 +220,8 @@ public class TemplateSQL implements Cloneable {
 
     } catch (Exception e) {
       System.out.println(e.toString());
-      System.out.println(Arrays.stream(e.getStackTrace())
+      System.out.println(
+          Arrays.stream(e.getStackTrace())
               .map(StackTraceElement::toString)
               .collect(Collectors.joining("\n")));
       return null;
@@ -253,20 +252,25 @@ public class TemplateSQL implements Cloneable {
       // Add the SetExpression to the UPDATE statement
       updateStatement
           .getUpdateSets()
-          .add(new UpdateSet(vidLeftColumn, addExpression)); // Add "vid = vid + 1" to the SET clause
+          .add(
+              new UpdateSet(vidLeftColumn, addExpression)); // Add "vid = vid + 1" to the SET clause
 
       // Add `vid` to the RETURNING clause
       if (!selectAllAttr) {
         Column vidReturnColumn = new Column("vid");
-        if (updateStatement.getFromItem() != null && updateStatement.getFromItem().getAlias() != null
-                && updateStatement.getFromItem().getAlias().isUseAs()
-                && updateStatement.getFromItem() instanceof Table) {
+        if (updateStatement.getFromItem() != null
+            && updateStatement.getFromItem().getAlias() != null
+            && updateStatement.getFromItem().getAlias().isUseAs()
+            && updateStatement.getFromItem() instanceof Table) {
           vidReturnColumn.setTable((Table) updateStatement.getFromItem());
         }
         if (updateStatement.getReturningExpressionList() == null) {
-          updateStatement.setReturningExpressionList(List.of(new SelectExpressionItem(vidReturnColumn)));
+          updateStatement.setReturningExpressionList(
+              List.of(new SelectExpressionItem(vidReturnColumn)));
         } else {
-          updateStatement.getReturningExpressionList().add(new SelectExpressionItem(vidReturnColumn));
+          updateStatement
+              .getReturningExpressionList()
+              .add(new SelectExpressionItem(vidReturnColumn));
         }
         columnList.add(new Column("vid"));
       }
@@ -277,7 +281,8 @@ public class TemplateSQL implements Cloneable {
 
     } catch (Exception e) {
       System.out.println(e.toString());
-      System.out.println(Arrays.stream(e.getStackTrace())
+      System.out.println(
+          Arrays.stream(e.getStackTrace())
               .map(StackTraceElement::toString)
               .collect(Collectors.joining("\n")));
       return null;
@@ -393,11 +398,12 @@ public class TemplateSQL implements Cloneable {
         for (UpdateSet updateSet : updateSets) {
           List<Column> columns = updateSet.getColumns();
           for (Column column : columns) {
-            if (updateSet.getExpressions().get(columns.indexOf(column)) instanceof JdbcParameter param1) {
+            if (updateSet.getExpressions().get(columns.indexOf(column))
+                instanceof JdbcParameter param1) {
               allPlaceholders.add(new ConditionInfo(column, param1));
             }
           }
-          for (Expression expression: updateSet.getExpressions()) {
+          for (Expression expression : updateSet.getExpressions()) {
             findJdbcParametersInSet(expression);
           }
         }
@@ -419,10 +425,12 @@ public class TemplateSQL implements Cloneable {
       Expression leftExpression = binaryExpression.getLeftExpression();
       Expression rightExpression = binaryExpression.getRightExpression();
 
-      if (rightExpression instanceof JdbcParameter param1 && leftExpression instanceof Column column1) {
+      if (rightExpression instanceof JdbcParameter param1
+          && leftExpression instanceof Column column1) {
         allPlaceholders.add(new ConditionInfo(column1, param1));
       }
-      if (rightExpression instanceof Column column2 && leftExpression instanceof JdbcParameter param2) {
+      if (rightExpression instanceof Column column2
+          && leftExpression instanceof JdbcParameter param2) {
         allPlaceholders.add(new ConditionInfo(column2, param2));
       }
 
@@ -437,11 +445,13 @@ public class TemplateSQL implements Cloneable {
       Expression leftExpression = binaryExpression.getLeftExpression();
       Expression rightExpression = binaryExpression.getRightExpression();
 
-      if (rightExpression instanceof JdbcParameter param1 && leftExpression instanceof Column column1) {
+      if (rightExpression instanceof JdbcParameter param1
+          && leftExpression instanceof Column column1) {
         allPlaceholders.add(new ConditionInfo(column1, param1, binaryExpression));
         wherePlaceholders.add(new ConditionInfo(column1, param1, binaryExpression));
       }
-      if (rightExpression instanceof Column column2 && leftExpression instanceof JdbcParameter param2) {
+      if (rightExpression instanceof Column column2
+          && leftExpression instanceof JdbcParameter param2) {
         allPlaceholders.add(new ConditionInfo(column2, param2, binaryExpression));
         wherePlaceholders.add(new ConditionInfo(column2, param2, binaryExpression));
       }
@@ -454,10 +464,17 @@ public class TemplateSQL implements Cloneable {
 
   private void handleComplexSQL() {
     // Check if the SQL is complex, i.e., it has multiple tables or joins
-    if (originSQL.contains("JOIN") || originSQL.contains("UNION") || originSQL.contains("INTERSECT") ||
-        originSQL.contains("EXCEPT") || originSQL.contains("GROUP BY") || originSQL.contains("ORDER BY") ||
-        originSQL.contains("HAVING") || originSQL.contains("LIMIT") || originSQL.contains("SORT") ||
-        originSQL.contains("AVG") || originSQL.contains("COUNT")) {
+    if (originSQL.contains("JOIN")
+        || originSQL.contains("UNION")
+        || originSQL.contains("INTERSECT")
+        || originSQL.contains("EXCEPT")
+        || originSQL.contains("GROUP BY")
+        || originSQL.contains("ORDER BY")
+        || originSQL.contains("HAVING")
+        || originSQL.contains("LIMIT")
+        || originSQL.contains("SORT")
+        || originSQL.contains("AVG")
+        || originSQL.contains("COUNT")) {
       // unsupported keyword for now
       this.complexSQL = true;
     } else if (containsSubquery()) {
@@ -477,13 +494,13 @@ public class TemplateSQL implements Cloneable {
     boolean result = false;
     // Check if the SQL has range queries on primary key
     for (ConditionInfo condition : wherePlaceholders) {
-      if (condition.getColumn() != null &&
-              MetaWorker.getINSTANCE().getSchema().isPrimaryKey(table, condition.getColumn())) {
+      if (condition.getColumn() != null
+          && MetaWorker.getINSTANCE().getSchema().isPrimaryKey(table, condition.getColumn())) {
         Expression expr = condition.getExpression();
-        if (expr instanceof GreaterThan ||
-                expr instanceof GreaterThanEquals ||
-                expr instanceof MinorThan ||
-                expr instanceof MinorThanEquals) {
+        if (expr instanceof GreaterThan
+            || expr instanceof GreaterThanEquals
+            || expr instanceof MinorThan
+            || expr instanceof MinorThanEquals) {
           ranges.putIfAbsent(condition.getColumn().getColumnName(), new ArrayList<>());
           ranges.get(condition.getColumn().getColumnName()).add(condition);
           result = true;
@@ -538,7 +555,7 @@ public class TemplateSQL implements Cloneable {
   public TemplateSQL clone() {
     try {
       TemplateSQL clone = (TemplateSQL) super.clone();
-      // TODO: copy mutable state here, so the clone can't change the internals of the original
+      clone.columnList = new ArrayList<>(columnList);
       return clone;
     } catch (CloneNotSupportedException e) {
       throw new AssertionError();

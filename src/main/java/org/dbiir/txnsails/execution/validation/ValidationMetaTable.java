@@ -2,20 +2,31 @@ package org.dbiir.txnsails.execution.validation;
 
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import lombok.Getter;
-import org.dbiir.txnsails.common.types.CCType;
-import org.dbiir.txnsails.common.types.LockType;
 import org.dbiir.txnsails.common.constants.SmallBankConstants;
 import org.dbiir.txnsails.common.constants.TPCCConstants;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
+import org.dbiir.txnsails.common.types.CCType;
+import org.dbiir.txnsails.common.types.LockType;
 
 public class ValidationMetaTable {
   private static final ValidationMetaTable INSTANCE;
+
+  private record RowKey(String table, String key) {
+    RowKey {
+      table = table.toLowerCase(Locale.ROOT);
+    }
+  }
+
+  private final ConcurrentHashMap<RowKey, ValidationLock> distributedLocks =
+      new ConcurrentHashMap<>();
+  private boolean distributed;
   private int LOAD_THREAD = 16;
   // another lock strategy in middle-tier concurrency under RC (unused)
   private final HashMap<String, LinkedList<ValidationLock>[]> validationLocks;
@@ -38,7 +49,65 @@ public class ValidationMetaTable {
     rangeValidationLocks = new HashMap<>(4);
   }
 
+  /** Distributed owners load versions on demand and keep independent auxiliary snapshots. */
+  public void initDistributed(String workload, List<Connection> connections) {
+    this.workload = workload;
+    this.connections = connections;
+    this.distributed = true;
+    distributedLocks.clear();
+    connectionGuards.clear();
+    for (int i = 0; i < connections.size(); i++) connectionGuards.add(new ReentrantLock());
+  }
+
+  public void releaseDistributedValidationLock(String table, long tid, String key) {
+    ValidationLock lock = distributedLocks.get(new RowKey(table, key));
+    if (lock != null) lock.releaseDistributedLock(tid);
+  }
+
+  public void tryDistributedValidationLock(String table, long tid, String key, LockType type)
+      throws SQLException {
+    if (!distributed) throw new SQLException("Distributed validation is not initialized", "55000");
+    ValidationLock lock =
+        distributedLocks.computeIfAbsent(new RowKey(table, key), ignored -> new ValidationLock(0));
+    if (lock.tryLock(tid, type, CCType.SER) < 0) {
+      throw new SQLException(
+          "Distributed validation lock conflict: " + table + " key=" + key, "40001");
+    }
+  }
+
+  public long getDistributedVersion(String table, String key) {
+    ValidationLock lock = distributedLocks.get(new RowKey(table, key));
+    return lock == null ? -1 : lock.getVersion();
+  }
+
+  public void updateDistributedVersion(String table, String key, long version) {
+    distributedLocks
+        .computeIfAbsent(new RowKey(table, key), ignored -> new ValidationLock(0))
+        .updateVersion(version);
+  }
+
+  public long fetchDistributedVersion(String table, String key, String query, List<Long> values)
+      throws SQLException {
+    int index = Math.floorMod(key.hashCode(), connections.size());
+    connectionGuards.get(index).lock();
+    try (var statement = connections.get(index).prepareStatement(query)) {
+      statement.setQueryTimeout(5);
+      for (int i = 0; i < values.size(); i++) statement.setLong(i + 1, values.get(i));
+      try (var rows = statement.executeQuery()) {
+        if (!rows.next()) throw new SQLException("Distributed validation row disappeared", "40001");
+        long version = rows.getLong("vid");
+        if (rows.wasNull() || version < 0 || rows.next())
+          throw new SQLException("Invalid distributed row version", "40001");
+        updateDistributedVersion(table, key, version);
+        return version;
+      }
+    } finally {
+      connectionGuards.get(index).unlock();
+    }
+  }
+
   public void initHotspot(String workload, List<Connection> connections) throws SQLException {
+    this.distributed = false;
     this.workload = workload;
     this.connections = connections;
     for (int i = 0; i < connections.size(); i++) {
@@ -65,7 +134,7 @@ public class ValidationMetaTable {
                       j += LOAD_THREAD) {
                     try {
                       if (!validationLocks.get(relationName)[j].isEmpty()) {
-                        int latestVersion =
+                        long latestVersion =
                             fetchLatestVersion(
                                 connections.get(index),
                                 SmallBankConstants.getLatestVersion(relationName, j));
@@ -95,7 +164,7 @@ public class ValidationMetaTable {
                       j += LOAD_THREAD) {
                     try {
                       if (!validationLocks.get(relationName)[j].isEmpty()) {
-                        int latestVersion =
+                        long latestVersion =
                             fetchLatestVersion(
                                 connections.get(index),
                                 YCSBConstants.getLatestVersion(relationName, j));
@@ -125,7 +194,7 @@ public class ValidationMetaTable {
                       j += LOAD_THREAD) {
                     try {
                       if (!validationLocks.get(relationName)[j].isEmpty()) {
-                        int latestVersion =
+                        long latestVersion =
                             fetchLatestVersion(
                                 connections.get(index),
                                 TPCCConstants.getLatestVersion(relationName, j));
@@ -175,7 +244,25 @@ public class ValidationMetaTable {
     }
   }
 
-  public int fetchUnknownVersionCache(String tableName, int key) throws SQLException {
+  public long fetchUnknownVersionCache(String tableName, int key) throws SQLException {
+    if (distributed) {
+      int index = Math.floorMod(key, connections.size());
+      connectionGuards.get(index).lock();
+      try {
+        String sql =
+            switch (workload) {
+              case "ycsb" -> YCSBConstants.getLatestVersion(tableName, key);
+              case "smallbank" -> SmallBankConstants.getLatestVersion(tableName, key);
+              case "tpcc" -> TPCCConstants.getLatestVersion(tableName, key);
+              default -> throw new SQLException("Unsupported distributed workload: " + workload);
+            };
+        long version = fetchLatestVersion(connections.get(index), sql);
+        updateHotspotVersion(tableName, key, version);
+        return version;
+      } finally {
+        connectionGuards.get(index).unlock();
+      }
+    }
     long result = -1;
     int bucketNum = -1;
     switch (workload) {
@@ -233,16 +320,17 @@ public class ValidationMetaTable {
     return (int) (result % Integer.MAX_VALUE);
   }
 
-  private int fetchLatestVersion(Connection conn, String finalSQL) throws SQLException {
-    int latestVersion = -1;
+  private long fetchLatestVersion(Connection conn, String finalSQL) throws SQLException {
+    long latestVersion = -1;
     if (!finalSQL.isEmpty()) {
       Statement stmt = conn.createStatement();
+      stmt.setQueryTimeout(5);
       try (ResultSet res = stmt.executeQuery(finalSQL)) {
         if (!res.next()) {
           String msg = "Invalid SQL #%sql".formatted(finalSQL);
           throw new RuntimeException(msg);
         }
-        latestVersion = res.getInt("vid");
+        latestVersion = res.getLong("vid");
       }
     }
     return latestVersion;
@@ -251,6 +339,16 @@ public class ValidationMetaTable {
   // tid: transaction id
   public void tryValidationLock(String table, long tid, long key, LockType type, CCType ccType)
       throws SQLException {
+    if (distributed && ccType == CCType.SER) {
+      ValidationLock lock =
+          distributedLocks.computeIfAbsent(
+              new RowKey(table, Long.toString(key)), ignored -> new ValidationLock(key));
+      if (lock.tryLock(tid, type, ccType) < 0) {
+        throw new SQLException(
+            "Distributed validation lock conflict: " + table + " key=" + key, "40001");
+      }
+      return;
+    }
     if (!validationLocks.containsKey(table)) {
       String msg = "unknown table name: " + table;
       throw new RuntimeException(msg);
@@ -264,7 +362,9 @@ public class ValidationMetaTable {
     }
   }
 
-  public void tryValidationLock(String table, long tid, long key, LockType type, CCType ccType, Range requestedRange) throws SQLException {
+  public void tryValidationLock(
+      String table, long tid, long key, LockType type, CCType ccType, Range requestedRange)
+      throws SQLException {
     if (!validationLocks.containsKey(table)) {
       throw new RuntimeException("unknown table name: " + table);
     }
@@ -272,7 +372,13 @@ public class ValidationMetaTable {
     // 1. check range conflict
     if (requestedRange != null) {
       if (!tryAcquireRangeLock(table, requestedRange, type)) {
-        throw new SQLException("Range lock conflict on table " + table + " range " + requestedRange.start() + "-" + requestedRange.end());
+        throw new SQLException(
+            "Range lock conflict on table "
+                + table
+                + " range "
+                + requestedRange.start()
+                + "-"
+                + requestedRange.end());
       }
       // try success range lock
       return;
@@ -292,13 +398,16 @@ public class ValidationMetaTable {
 
   private boolean tryAcquireRangeLock(String table, Range requestedRange, LockType type) {
     synchronized (rangeValidationLocks) {
-      List<RangeValidationLock> rangeLocks = rangeValidationLocks.computeIfAbsent(table, k -> new ArrayList<>());
+      List<RangeValidationLock> rangeLocks =
+          rangeValidationLocks.computeIfAbsent(table, k -> new ArrayList<>());
 
       // check conflict
       for (RangeValidationLock lock : rangeLocks) {
         if (lock.overlaps(requestedRange.start(), requestedRange.end())) {
           // check rw conflict
-          if (type == LockType.SH && lock.rwLock.getReadLockCount() > 0 && !lock.rwLock.isWriteLocked()) {
+          if (type == LockType.SH
+              && lock.rwLock.getReadLockCount() > 0
+              && !lock.rwLock.isWriteLocked()) {
             continue;
           }
           // conflict, NO-WAIT strategy
@@ -307,7 +416,8 @@ public class ValidationMetaTable {
       }
 
       // No conflict, add interval lock
-      RangeValidationLock newLock = new RangeValidationLock(requestedRange.start(), requestedRange.end());
+      RangeValidationLock newLock =
+          new RangeValidationLock(requestedRange.start(), requestedRange.end());
       boolean locked = newLock.tryLock(type);
       if (!locked) {
         return false;
@@ -430,6 +540,13 @@ public class ValidationMetaTable {
   }
 
   public void updateHotspotVersion(String table, long key, long tid) {
+    if (distributed) {
+      distributedLocks
+          .computeIfAbsent(
+              new RowKey(table, Long.toString(key)), ignored -> new ValidationLock(key))
+          .updateVersion(tid);
+      return;
+    }
     int bucketNum = (int) (key % getHashSizeByRelationName(table));
     validationBucketLocks.get(table)[bucketNum].readLock().lock();
     for (ValidationLock lock : validationLocks.get(table)[bucketNum]) {
@@ -442,6 +559,10 @@ public class ValidationMetaTable {
   }
 
   public long getHotspotVersion(String table, long key) {
+    if (distributed) {
+      ValidationLock lock = distributedLocks.get(new RowKey(table, Long.toString(key)));
+      return lock == null ? -1 : lock.getVersion();
+    }
     if (!validationLocks.containsKey(table)) {
       String msg = "unknown table name: " + table;
       throw new RuntimeException(msg);

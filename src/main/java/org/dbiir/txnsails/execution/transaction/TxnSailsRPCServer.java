@@ -1,236 +1,179 @@
 package org.dbiir.txnsails.execution.transaction;
 
-import lombok.Getter;
-import org.dbiir.txnsails.common.messages.*;
-import org.dbiir.txnsails.common.types.MessageType;
-import org.dbiir.txnsails.execution.WorkloadConfiguration;
-import org.dbiir.txnsails.execution.validation.ValidationItem;
-
 import java.io.*;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.net.SocketException;
+import java.net.*;
 import java.sql.SQLException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.logging.Logger;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.*;
+import org.dbiir.txnsails.common.messages.*;
+import org.dbiir.txnsails.execution.WorkloadConfiguration;
 
 public class TxnSailsRPCServer implements Runnable {
-  private static final Logger logger = Logger.getLogger(TxnSailsRPCServer.class.getName());
-  @Getter
   public static final int DEFAULT_PORT = 23333;
-
-  private final int port;
-  // private final Connection connection;
-  private final int instanceID;
+  private final ServerSocket serverSocket;
   private final ExecutorService executor = Executors.newCachedThreadPool();
-  private ServerSocket serverSocket;
+  private final Set<Socket> sockets = ConcurrentHashMap.newKeySet();
+  private final ConcurrentMap<Long, ValidationRecord> records = new ConcurrentHashMap<>();
+  private volatile boolean closed;
+  private static final int COMPLETED_HISTORY_LIMIT = 4096;
+  private final Map<Long, Boolean> completed = new LinkedHashMap<>();
+  private final Map<Integer, Long> rejectedThrough = new HashMap<>();
 
-  public TxnSailsRPCServer(int port, WorkloadConfiguration wrkld) {
-    this.port = port;
-    this.instanceID = wrkld.getInstanceID();
+  private static class ValidationRecord {
+    Participant participant;
+    SQLException failure;
+    boolean finished;
+    org.dbiir.txnsails.execution.validation.ValidationItem[] items;
+  }
+
+  public TxnSailsRPCServer(int port, WorkloadConfiguration configuration) {
     try {
-      // this.connection = DriverManager.getConnection(wrkld.getUrl(), wrkld.getUsername(), wrkld.getPassword());
-    } catch (Exception e) {
-      throw new RuntimeException("Failed to connect to database", e);
+      serverSocket = new ServerSocket(port);
+    } catch (IOException ex) {
+      throw new IllegalStateException("Cannot bind validation RPC port " + port, ex);
     }
-    try {
-      this.serverSocket = new ServerSocket(port);
-    } catch (IOException e) {
-      System.out.println("Failed to start server");
-    }
+  }
+
+  public int getPort() {
+    return serverSocket.getLocalPort();
   }
 
   @Override
   public void run() {
     try {
-      if (serverSocket == null) {
-        return;
+      while (!closed) {
+        Socket socket = serverSocket.accept();
+        sockets.add(socket);
+        executor.submit(() -> handle(socket));
       }
-      System.out.println("ValidationRpcServer started on port: " + port);
-      while (!Thread.currentThread().isInterrupted()) {
-        Socket clientSocket = serverSocket.accept();
-        System.out.println("Accepted connection from: " + clientSocket.getInetAddress().getHostName());
-        executor.execute(new ClientHandler(clientSocket));
-      }
-    } catch (SocketException e) {
-      if (!Thread.currentThread().isInterrupted()) {
-        logger.warning("ServerSocket closed unexpectedly" + e);
-      }
-    } catch (Exception e) {
-      e.printStackTrace();
-      throw new RuntimeException("ValidationRpcServer execution failed", e);
+    } catch (IOException ex) {
+      if (!closed) throw new IllegalStateException("Validation RPC server failed", ex);
     } finally {
       executor.shutdown();
-      System.out.println("ValidationRpcServer wait for all executor terminate");
-      try {
-        while (!executor.isTerminated()) {
-          executor.awaitTermination(100, TimeUnit.SECONDS);
-        }
-      } catch (InterruptedException e) {
-        executor.shutdownNow();
-        Thread.currentThread().interrupt();
-      }
-      System.out.println("ValidationRpcServer stopped");
     }
+  }
+
+  private void handle(Socket socket) {
+    try (socket;
+        DataInputStream input =
+            new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+        DataOutputStream output =
+            new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
+      while (!closed) {
+        Message request = RPCWire.read(input);
+        Message response =
+            switch (request.getType()) {
+              case VALIDATION_REQ -> validate((ValidationRequest) request);
+              case FINAL_REQ -> finish((FinalRequest) request);
+              case DONE_REQ -> new DoneResponse(((DoneRequest) request).getInstanceID());
+              default -> throw new IOException("Unsupported RPC request " + request.getType());
+            };
+        RPCWire.write(output, response);
+      }
+    } catch (EOFException | SocketException ignored) {
+      // Validated locks survive the connection: the coordinator may have prepared or committed.
+    } catch (IOException | ClassNotFoundException ex) {
+      if (!closed) System.err.println("Validation RPC communication failed: " + ex.getMessage());
+    } finally {
+      sockets.remove(socket);
+    }
+  }
+
+  private ValidationResponse validate(ValidationRequest request) {
+    ValidationResponse response = new ValidationResponse(request.getTid());
+    ValidationRecord record;
+    synchronized (completed) {
+      int coordinator = (int) (request.getTid() & 255);
+      if (completed.containsKey(request.getTid())
+          || (!records.containsKey(request.getTid())
+              && request.getTid() <= rejectedThrough.getOrDefault(coordinator, -1L))) {
+        response.setException(
+            new SQLException("Transaction is finalized or too old to validate", "40001"));
+        return response;
+      }
+      record = records.computeIfAbsent(request.getTid(), ignored -> new ValidationRecord());
+    }
+    synchronized (record) {
+      if (record.finished) {
+        response.setException(new SQLException("Transaction was already finalized", "25000"));
+      } else if (record.participant != null || record.failure != null) {
+        boolean same = record.items != null && record.items.length == request.getItems().length;
+        for (int i = 0; same && i < record.items.length; i++) {
+          same = record.items[i].sameAccess(request.getItems()[i]);
+        }
+        response.setException(
+            same
+                ? record.failure
+                : new SQLException("Duplicate transaction ID with different accesses", "40001"));
+      } else {
+        record.participant = new Participant(0);
+        record.items = request.getItems();
+        try {
+          for (var item : request.getItems()) record.participant.addValidationItem(item);
+          record.participant.validate(request.getTid());
+        } catch (SQLException | RuntimeException ex) {
+          record.failure =
+              ex instanceof SQLException sql
+                  ? sql
+                  : new SQLException("Validation failed", "40001", ex);
+          response.setException(record.failure);
+        }
+      }
+    }
+    return response;
+  }
+
+  private FinalResponse finish(FinalRequest request) {
+    ValidationRecord record;
+    synchronized (completed) {
+      if (completed.containsKey(request.getTid())) {
+        FinalResponse response = new FinalResponse(request.getTid());
+        if (completed.get(request.getTid()) != request.isCommit()) {
+          response.setException(new SQLException("Conflicting finalization decision", "08007"));
+        }
+        return response;
+      }
+      record = records.computeIfAbsent(request.getTid(), ignored -> new ValidationRecord());
+    }
+    synchronized (record) {
+      if (!record.finished) {
+        if (record.participant != null && record.failure == null) {
+          record.participant.doAfterCommit(request.getTid(), request.isCommit());
+        }
+        record.participant = null;
+        record.items = null;
+        record.finished = true;
+        synchronized (completed) {
+          records.remove(request.getTid(), record);
+          completed.put(request.getTid(), request.isCommit());
+          while (completed.size() > COMPLETED_HISTORY_LIMIT) {
+            long evicted = completed.keySet().iterator().next();
+            completed.remove(evicted);
+            int coordinator = (int) (evicted & 255);
+            rejectedThrough.merge(coordinator, evicted, Math::max);
+          }
+        }
+      }
+    }
+    return new FinalResponse(request.getTid());
   }
 
   public void closeServer() {
+    closed = true;
     try {
-      if (serverSocket != null && !serverSocket.isClosed()) {
-        serverSocket.close();
-      }
-    } catch (IOException e) {
-      logger.warning("Error closing ServerSocket" + e);
+      serverSocket.close();
+    } catch (IOException ignored) {
     }
-  }
-
-  private class ClientHandler implements Runnable {
-    private Socket clientSocket;
-    private ObjectInputStream ois;
-    private ObjectOutputStream oos;
-
-    public ClientHandler(Socket socket) {
-      this.clientSocket = socket;
-      try {
-        ois = new ObjectInputStream(clientSocket.getInputStream());
-        oos = new ObjectOutputStream(clientSocket.getOutputStream());
-      } catch (IOException ex) {
-        ex.printStackTrace();
-        throw new RuntimeException("Failed to create input/output streams", ex);
-      }
-    }
-
-    @Override
-    public void run() {
-      try {
-        while (!clientSocket.isClosed()) {
-          int messageLength = ois.readInt();
-          if (messageLength <= 0) {
-            logger.warning("Invalid message length: " + messageLength);
-            break;
+    sockets.forEach(
+        socket -> {
+          try {
+            socket.close();
+          } catch (IOException ignored) {
           }
-          byte[] messageData = new byte[messageLength];
-          ois.readFully(messageData);  // 确保读取完整数据
-
-          ByteArrayInputStream bais = new ByteArrayInputStream(messageData);
-          ObjectInputStream oois = new ObjectInputStream(bais);
-          Message msg = (Message) oois.readObject();
-          // handle the requests
-          // System.out.println("Receive message: " + msg.getType());
-          switch (msg.getType()) {
-            case MessageType.VALIDATION_REQ -> {
-              handleValidationRequest((ValidationRequest) msg);
-            }
-            case MessageType.FINAL_REQ -> {
-              handleFinalRequest((FinalRequest) msg);
-            }
-            case MessageType.DONE_REQ -> {
-              handleDoneRequest((DoneRequest) msg);
-            }
-            default -> {
-              logger.warning("Unknown message type: " + msg.getType());
-            }
-          }
-        }
-      } catch (EOFException e) {
-        // close
-        System.out.println("Client disconnected normally");
-      } catch (SocketException e) {
-        // network error
-        System.out.println("Client disconnected unexpectedly: " + e.getMessage());
-      } catch (IOException e) {
-        logger.warning("I/O error while reading message" + e);
-      } catch (Exception e) {
-        throw new RuntimeException("Failed to handle client request", e);
-      } finally {
-        System.out.println("ClientHandler stopped");
-      }
-    }
-
-    private String bytesToHex(byte[] bytes) {
-      StringBuilder sb = new StringBuilder();
-      for (byte b : bytes) {
-        sb.append(String.format("%02x ", b));
-      }
-      return sb.toString();
-    }
-
-    private void handleValidationRequest(ValidationRequest req) {
-      // debugSerialization(req);
-      long tid = req.getTid();
-      // logger.info("Received validation request for transaction #" + tid + " from " + clientSocket.getInetAddress().getHostName());
-      ValidationResponse resp = new ValidationResponse(tid);
-      int validationPhase = 0;
-
-      try {
-        for (ValidationItem item : req.getItems()) {
-          item.validate(tid);
-          validationPhase += 1;
-        }
-      } catch (SQLException ex) {
-        releaseValidationLocks(tid, validationPhase, req.getItems());
-        resp.setException(ex);
-      }
-      try {
-        sendResponse(resp);
-        // oos.writeObject(resp);
-      } catch (IOException ex) {
-        releaseValidationLocks(tid, validationPhase, req.getItems());
-        ex.printStackTrace();
-      }
-    }
-
-    private void handleFinalRequest(FinalRequest req) {
-      long tid = req.getTid();
-      logger.info("Received final request for transaction #" + tid + " from " + clientSocket.getInetAddress().getHostName());
-      FinalResponse resp = new FinalResponse(tid);
-      for (ValidationItem item : req.getItems()) {
-        item.doAfterCommit(tid, req.isCommit());
-      }
-      try {
-        sendResponse(resp);
-        // oos.writeObject(resp);
-      } catch (IOException ex) {
-        ex.printStackTrace();
-      }
-    }
-
-    private void handleDoneRequest(DoneRequest req) {
-      int finishedInstance = req.getInstanceID();
-      logger.info("Received done request from " + finishedInstance + " " + clientSocket.getInetAddress().getHostName());
-      DoneResponse resp = new DoneResponse(instanceID);
-      TransactionManager.getInstance().setParticipantsFinish(finishedInstance);
-      try {
-        sendResponse(resp);
-        // oos.writeObject(resp);
-      } catch (IOException ex) {
-        ex.printStackTrace();
-      }
-    }
-
-    private void sendResponse(Message resp) throws IOException {
-      byte[] data = packageMessage(resp);
-      oos.writeInt(data.length);  // 先写长度
-      oos.write(data);           // 再写数据
-      oos.flush();
-    }
-
-    private byte[] packageMessage(Message msg) {
-      ByteArrayOutputStream baos = new ByteArrayOutputStream();
-      try (ObjectOutputStream ooos = new ObjectOutputStream(baos)) {
-        ooos.writeObject(msg);
-      } catch (IOException e) {
-        System.out.println("Package failed, message: " + e);
-      }
-      return baos.toByteArray();
-    }
-
-    private void releaseValidationLocks(long tid, int validationPhase, ValidationItem[] validationSet) {
-      for (int i = validationPhase; i >= 0; i--) {
-        validationSet[i].releaseValidationLock(tid);
-      }
-    }
+        });
+    executor.shutdownNow();
   }
 }

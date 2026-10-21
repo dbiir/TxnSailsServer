@@ -22,7 +22,15 @@ public class DBInstance {
   @JacksonXmlProperty(localName = "password")
   private String password;
 
-  public DBInstance(int id, String url, String host, String username, String password){
+  @JacksonXmlProperty(localName = "isolation")
+  private String isolation;
+
+  @JacksonXmlProperty(localName = "rpcPort")
+  private int rpcPort = 23333;
+
+  public DBInstance() {}
+
+  public DBInstance(int id, String url, String host, String username, String password) {
     this.id = id;
     this.url = url;
     this.host = host;
@@ -32,7 +40,6 @@ public class DBInstance {
 
   @Override
   public String toString() {
-    return String.format("url:%s, host: %s, username:%s, password:%s",
-            this.getUrl(), this.getHost(), this.getUsername(),this.getPassword());
+    return String.format("id:%s, url:%s, host:%s", id, url, host);
   }
 }

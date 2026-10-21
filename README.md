@@ -1,6 +1,10 @@
 # TxnSails
 The code base of "TxnSails: Achieving Serializable **Transaction** Scheduling with **S**elf-**A**daptive **I**solation **L**evel **S**election" and its distributed extension.
 
+For distributed PostgreSQL deployment, supported SQL, isolation configuration, and
+recovery requirements, see [Distributed transactions](docs/distributed-transactions.md)
+and [the example placement configuration](config/distributed-example.xml).
+
 ## Brief introduction
 TxnSails works in the middle tier between database and application. It meets three requirements:
 1. It requires minimal modifications to client applications and database kernels, ensuring low implementation overhead.

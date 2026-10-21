@@ -6,7 +6,7 @@ import org.dbiir.txnsails.common.types.CCType;
 public class TransactionTemplate implements Cloneable {
   @Getter private final String name;
   // a template contains at most 15 sqls for now
-  private final TemplateSQL[] sqls = new TemplateSQL[15];
+  private TemplateSQL[] sqls = new TemplateSQL[15];
   private int sql_idx_in_template;
   @Getter private int type; // one-hot encode
 
@@ -78,8 +78,7 @@ public class TransactionTemplate implements Cloneable {
   public TransactionTemplate clone() {
     try {
       TransactionTemplate clone = (TransactionTemplate) super.clone();
-      // TODO: copy mutable state here, so the clone can't change the internals of the original
-      //            clone.sqls = new TemplateSQL[15];
+      clone.sqls = new TemplateSQL[sqls.length];
       for (int i = 0; i < sql_idx_in_template; i++) {
         if (sqls[i] != null) {
           clone.sqls[i] = sqls[i].clone();

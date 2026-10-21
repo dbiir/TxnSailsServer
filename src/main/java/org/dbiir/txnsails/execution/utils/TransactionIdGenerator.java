@@ -1,47 +1,109 @@
 package org.dbiir.txnsails.execution.utils;
 
-public class TransactionIdGenerator {
-  private static final int ID_BITS = 8;          // id 占 8 位 (0-255)
-  private static final int THREAD_BITS = 10;     // 线程ID占 10 位 (0-1023)
-  private static final int TIMESTAMP_BITS = 46;  // 时间戳占 46 位
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
-  // 移位常量
-  private static final int THREAD_ID_SHIFT = ID_BITS;                    // 8位
-  private static final int TIMESTAMP_SHIFT = THREAD_BITS + ID_BITS;       // 18位
+/** Node IDs occupy the low byte; durable counter blocks prevent reuse after coordinator restart. */
+public final class TransactionIdGenerator {
+  private static final long BLOCK_SIZE = 4096;
+  private static final long MAX_COUNTER = Long.MAX_VALUE >>> 8;
+  private static final AtomicLong EPHEMERAL = new AtomicLong(System.currentTimeMillis() << 10);
+  private static final Map<Integer, Allocator> ALLOCATORS = new HashMap<>();
 
-  // 掩码常量
-  private static final long ID_MASK = (1L << ID_BITS) - 1;               // 0xFF (255)
-  private static final long THREAD_ID_MASK = (1L << THREAD_BITS) - 1;    // 0x3FF (1023)
-  private static final long TIMESTAMP_MASK = (1L << TIMESTAMP_BITS) - 1; // 0x3FFFFFFFFFFFF
+  private static class Allocator {
+    final Path file;
+    long next;
+    long limit;
 
-  public static long generateTransactionId(int id) {
-    validateId(id);
+    Allocator(Path file) {
+      this.file = file;
+    }
 
-    long timestamp = System.currentTimeMillis();
-    long threadId = Thread.currentThread().threadId();
+    void reserve() throws IOException {
+      Files.createDirectories(file.toAbsolutePath().getParent());
+      try (FileChannel channel =
+              FileChannel.open(
+                  file,
+                  StandardOpenOption.CREATE,
+                  StandardOpenOption.READ,
+                  StandardOpenOption.WRITE);
+          var lock = channel.lock()) {
+        long previous = 0;
+        if (channel.size() != 0) {
+          if (channel.size() != 16) throw new IOException("Invalid transaction ID checkpoint");
+          ByteBuffer data = ByteBuffer.allocate(16);
+          while (data.hasRemaining())
+            if (channel.read(data) < 0)
+              throw new IOException("Truncated transaction ID checkpoint");
+          data.flip();
+          previous = data.getLong();
+          if (data.getLong() != ~previous || previous < 0 || previous > MAX_COUNTER) {
+            throw new IOException("Corrupt transaction ID checkpoint");
+          }
+        }
+        long candidateNext = Math.max(previous, System.currentTimeMillis() << 10);
+        long candidateLimit = Math.addExact(candidateNext, BLOCK_SIZE);
+        if (candidateLimit > MAX_COUNTER) throw new IOException("Transaction ID space exhausted");
+        ByteBuffer checkpoint =
+            ByteBuffer.allocate(16).putLong(candidateLimit).putLong(~candidateLimit);
+        checkpoint.flip();
+        channel.position(0);
+        while (checkpoint.hasRemaining()) channel.write(checkpoint);
+        channel.force(true);
+        // A failed checkpoint must never expose IDs from an unreserved block.
+        next = candidateNext;
+        limit = candidateLimit;
+      }
+    }
+  }
 
-    return ((timestamp & TIMESTAMP_MASK) << TIMESTAMP_SHIFT)
-            | ((threadId & THREAD_ID_MASK) << THREAD_ID_SHIFT)
-            | (id & ID_MASK);
+  public static synchronized void configure(Path checkpoint, int instanceID) throws IOException {
+    validateId(instanceID);
+    Allocator allocator = new Allocator(checkpoint);
+    allocator.reserve();
+    ALLOCATORS.put(instanceID, allocator);
+  }
+
+  public static synchronized long generateTransactionId(int instanceID) {
+    validateId(instanceID);
+    Allocator allocator = ALLOCATORS.get(instanceID);
+    long counter;
+    if (allocator == null) {
+      // Standalone callers/tests have no restart guarantee; distributed servers always configure.
+      counter =
+          EPHEMERAL.updateAndGet(
+              previous -> Math.max(previous + 1, System.currentTimeMillis() << 10));
+    } else {
+      try {
+        if (allocator.next == allocator.limit) allocator.reserve();
+      } catch (IOException ex) {
+        throw new IllegalStateException("Cannot reserve transaction IDs", ex);
+      }
+      counter = allocator.next++;
+    }
+    return (counter << 8) | instanceID;
   }
 
   public static int extractId(long tid) {
-    return (int) (tid & ID_MASK);
+    return (int) (tid & 255);
   }
 
+  /** Legacy accessor: these bits now hold a logical sequence, not a JVM thread ID. */
+  @Deprecated
   public static long extractThreadId(long tid) {
-    return (tid >>> THREAD_ID_SHIFT) & THREAD_ID_MASK;
+    return (tid >>> 8) & 1023;
   }
 
   public static long extractTimestamp(long tid) {
-    return (tid >>> TIMESTAMP_SHIFT) & TIMESTAMP_MASK;
+    return tid >>> 18;
   }
 
   private static void validateId(int id) {
-    if (id < 0 || id > ID_MASK) {
-      throw new IllegalArgumentException(
-              String.format("ID must be between 0 and %d", ID_MASK)
-      );
-    }
+    if (id < 0 || id > 255) throw new IllegalArgumentException("Instance ID must be in [0,255]");
   }
 }

@@ -1,5 +1,7 @@
 package org.dbiir.txnsails.execution.validation;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import lombok.Getter;
@@ -7,7 +9,7 @@ import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.common.types.LockType;
 
 public class ValidationLock {
-  private static final long EXPIRED_SPAN = 10 * 1000;  // the expired span is 1s
+  private static final long EXPIRED_SPAN = 10 * 1000; // the expired span is 1s
   private LockType type; // SH for read validation, EX for write commit check
   private final Lock lock;
   private int count;
@@ -15,7 +17,8 @@ public class ValidationLock {
   private long minWriteWaitTid;
   private long minReadWaitTid;
   @Getter private final long id;
-  @Getter long version;
+  @Getter volatile long version;
+  private final Map<Long, LockType> distributedHolders = new HashMap<>();
   private long lease;
 
   public ValidationLock(long id) {
@@ -46,6 +49,22 @@ public class ValidationLock {
    * @return result. 1 for success, 0 means the transaction manager can wait, -1 for abort
    */
   public int tryLock(long tid, LockType lockType, CCType ccType) {
+    if (ccType == CCType.SER) {
+      this.lock.lock();
+      try {
+        if (distributedHolders.containsKey(tid)) {
+          return distributedHolders.get(tid) == lockType ? 1 : -1;
+        }
+        if (!distributedHolders.isEmpty()
+            && (lockType == LockType.EX || distributedHolders.containsValue(LockType.EX))) {
+          return -1;
+        }
+        distributedHolders.put(tid, lockType);
+        return 1;
+      } finally {
+        this.lock.unlock();
+      }
+    }
     int result = -2;
     this.lock.lock();
     if (this.type == LockType.NoneType) {
@@ -122,6 +141,15 @@ public class ValidationLock {
     this.lock.unlock();
     assert (result != -2);
     return result;
+  }
+
+  public void releaseDistributedLock(long tid) {
+    this.lock.lock();
+    try {
+      distributedHolders.remove(tid);
+    } finally {
+      this.lock.unlock();
+    }
   }
 
   public void releaseLock(LockType lockType) {

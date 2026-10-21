@@ -4,7 +4,6 @@ import java.sql.*;
 import java.util.*;
 import java.util.concurrent.Future;
 import java.util.logging.Logger;
-
 import lombok.Getter;
 import lombok.Setter;
 import net.sf.jsqlparser.schema.Column;
@@ -83,28 +82,49 @@ public class OnlineWorker {
         this.ccType = configuration.getConcurrencyControlType();
         switch (ccType) {
           case RC, RC_TAILOR ->
-                  this.conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+              this.conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
           case SI, SI_TAILOR ->
-                  this.conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+              this.conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
           case SER -> this.conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
         }
       } else {
         distributed = true;
-        for (int i = 1; i <= configuration.getInstances().size(); i++) {
-          Connection instanceConnection;
-          DBInstance instance = configuration.getInstances().get(i);
-          if(StringUtils.isEmpty(instance.getUsername())){
-            instanceConnection = DriverManager.getConnection(instance.getUrl());
-          }else{
-            instanceConnection = DriverManager.getConnection(instance.getUrl(), instance.getUsername(),
-                    instance.getPassword());
+        Set<Integer> ids = new HashSet<>();
+        for (DBInstance instance : configuration.getInstances()) {
+          int instanceId = instance.getId();
+          if (instanceId < 0 || instanceId >= MAX_INSTANCE_NUM || !ids.add(instanceId)) {
+            throw new SQLException(
+                "Database IDs must be unique and in [0," + MAX_INSTANCE_NUM + ")");
           }
-          connections[i] = instanceConnection;
-          resultList[i] = new AsyncResultWrapper(connections[i], i);
-          // partitionIdToConnection.put(i, benchmark.partitionMetas[i].getConnection(id));
+          Connection connection =
+              StringUtils.isEmpty(instance.getUsername())
+                  ? DriverManager.getConnection(instance.getUrl())
+                  : DriverManager.getConnection(
+                      instance.getUrl(), instance.getUsername(), instance.getPassword());
+          connections[instanceId] = connection;
+          // Explicit BEGIN leaves COMMIT PREPARED outside an implicit JDBC transaction.
+          connection.setAutoCommit(true);
+          String isolation = instance.getIsolation();
+          if (isolation == null) isolation = configuration.getConcurrencyControlType().name();
+          int jdbcIsolation =
+              switch (isolation.toUpperCase(Locale.ROOT).replace("TRANSACTION_", "")) {
+                case "RC", "RC_TAILOR", "READ_COMMITTED" -> Connection.TRANSACTION_READ_COMMITTED;
+                case "SI", "SI_TAILOR", "REPEATABLE_READ" -> Connection.TRANSACTION_REPEATABLE_READ;
+                case "SER", "SERIALIZABLE", "DYNAMIC" -> Connection.TRANSACTION_SERIALIZABLE;
+                default -> throw new SQLException("Unsupported database isolation " + isolation);
+              };
+          connection.setTransactionIsolation(jdbcIsolation);
+          resultList[instanceId] = new AsyncResultWrapper(connection, instanceId);
         }
       }
     } catch (SQLException ex) {
+      for (Connection connection : connections) {
+        if (connection != null)
+          try {
+            connection.close();
+          } catch (SQLException ignored) {
+          }
+      }
       throw new RuntimeException("Failed to connect to database", ex);
     }
     // clone the analysis result to thread local
@@ -116,7 +136,7 @@ public class OnlineWorker {
     }
     // init the first transactionID
     this.transactionId =
-            (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
+        (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
     this.transaction = new Transaction(transactionId);
     for (int i = 0; i < MAX_INSTANCE_NUM; i++) {
       this.participants[i] = new Participant(i, this.connections[i]);
@@ -136,7 +156,7 @@ public class OnlineWorker {
       return DriverManager.getConnection(configuration.getUrl());
     } else {
       return DriverManager.getConnection(
-              configuration.getUrl(), configuration.getUsername(), configuration.getPassword());
+          configuration.getUrl(), configuration.getUsername(), configuration.getPassword());
     }
   }
 
@@ -148,23 +168,30 @@ public class OnlineWorker {
    *     template args[2:]: the params for
    */
   public String execute(String[] args, int offset) throws SQLException {
+    if (!this.templates.containsKey(args[offset - 2])) {
+      MetaWorker.getINSTANCE().cloneTemplatesAfterAnalysis(this.templates);
+    }
     TemplateSQL templateSQL;
     if (args.length < offset) {
       templateSQL = this.findTemplateSQL(args[1]);
     } else {
       templateSQL =
-              this.templates.get(args[offset - 2]).getSQLTemplateByIndex(Integer.parseInt(args[offset - 1]));
+          this.templates
+              .get(args[offset - 2])
+              .getSQLTemplateByIndex(Integer.parseInt(args[offset - 1]));
     }
+    if (templateSQL == null) throw new SQLException("Unknown SQL template", "22023");
+    if (distributed) return executeDistributed(templateSQL, args, offset);
     StringBuilder results = new StringBuilder();
 
     // record the sql that need validate
     if (templateSQL.isNeedRewriteUnderRC() || templateSQL.isNeedRewriteUnderSI() || shouldSample) {
       ValidationMeta meta =
-              templateSQL.isNeedRewriteUnderRC()
-                      ? validationMetaUnderRC[validationMetaIdxUnderRC]
-                      : templateSQL.isNeedRewriteUnderSI()
-                      ? validationMetaUnderSI[validationMetaIdxUnderSI]
-                      : sampleMeta;
+          templateSQL.isNeedRewriteUnderRC()
+              ? validationMetaUnderRC[validationMetaIdxUnderRC]
+              : templateSQL.isNeedRewriteUnderSI()
+                  ? validationMetaUnderSI[validationMetaIdxUnderSI]
+                  : sampleMeta;
       meta.setTemplateSQL(templateSQL);
       if (templateSQL.getUniqueKeyNumber() <= args.length - offset) {
         meta.addRuntimeArgs(List.of(args), offset);
@@ -178,9 +205,9 @@ public class OnlineWorker {
 
         if (shouldSample) {
           addSampleMeta(
-                  templateSQL.getOp(),
-                  MetaWorker.getINSTANCE().getRelationType(templateSQL.getTable()),
-                  meta.getIdForValidation());
+              templateSQL.getOp(),
+              MetaWorker.getINSTANCE().getRelationType(templateSQL.getTable()),
+              meta.getIdForValidation());
         }
         if (templateSQL.isNeedRewriteUnderRC()) {
           validationMetaIdxUnderRC++;
@@ -194,24 +221,12 @@ public class OnlineWorker {
       }
     }
 
-
-    sampleMeta.setTemplateSQL(templateSQL);
-    sampleMeta.addRuntimeArgs(List.of(args), offset);
-    int instanceId = DistributionInfo.getINSTANCE().getInstanceID(sampleMeta);
-
     String executeSQL = templateSQL.getSQL();
     boolean firstUse = false;
-    if (!connectionUsed[instanceId]) {
-      // append `BEGIN' statement to this connection
-      executeSQL = "BEGIN; " + executeSQL;
-      connectionUsed[instanceId] = true;
-      this.transaction.addParticipant(this.participants[instanceId]);
-      firstUse = true;
-    }
 
     // execute the sql
     try (PreparedStatement stmtc =
-                 this.getPreparedStatement(conn, new SQLStmt(executeSQL), args, offset, templateSQL)) {
+        this.getPreparedStatement(conn, new SQLStmt(executeSQL), args, offset, templateSQL)) {
       stmtc.setQueryTimeout(1);
       try (ResultSet rs = firstUse ? omitBeginStatement(stmtc) : stmtc.executeQuery()) {
         int v = -1;
@@ -262,38 +277,98 @@ public class OnlineWorker {
     return finalResultSet;
   }
 
-  public void commitFS() throws SQLException {
-    // 0. prepare
+  private String executeDistributed(TemplateSQL templateSQL, String[] args, int offset)
+      throws SQLException {
+    if (!isInTransaction) throw new SQLException("BEGIN is required", "25000");
+    if (transaction.getStatus() != TransactionStatus.ACTIVE) {
+      throw new SQLException("Transaction outcome is unresolved", "08007");
+    }
+    if (transaction.isRollbackOnly())
+      throw new SQLException("Transaction is rollback-only", "25P02");
     try {
-      TransactionManager.getInstance().prepare(this.transaction.getTid());
-    } catch (SQLException ex) {
-      System.out.println(Thread.currentThread().getName() + " transaction #" + this.transaction.getTid() +
-                         " prepare failed, " + ex.getMessage());
-      rollbackFS();
-      return;
-    }
-
-    // 1. check the async prepare results
-    if (!this.transaction.isPrepared()) {
-      rollbackFS();
-      return;
-    }
-    // 2. commit or rollback a transaction
-    TransactionManager.getInstance().commit(this.transaction.getTid(), this.resultList);
-    for (AsyncResultWrapper result: this.resultList) {
-      if (!result.isSuccess()) {
-        logger.warning(Thread.currentThread().getName() + " transaction #" + this.transaction.getTid() +
-                        " commit failed after preparation, " + result.getException().getMessage());
+      org.dbiir.txnsails.execution.transaction.DistributedSQL.validate(templateSQL, schema);
+      ValidationMeta meta = new ValidationMeta();
+      meta.setTemplateSQL(templateSQL);
+      meta.addRuntimeArgs(List.of(args), offset);
+      if (meta.getIdForValidation() < 0)
+        throw new SQLException("Unsupported distributed key", "0A000");
+      int instanceId = DistributionInfo.getINSTANCE().getInstanceID(meta);
+      if (connections[instanceId] == null) throw new SQLException("Unknown database " + instanceId);
+      if (!connectionUsed[instanceId]) {
+        try (Statement begin = connections[instanceId].createStatement()) {
+          begin.execute("BEGIN");
+        }
+        connectionUsed[instanceId] = true;
+        transaction.addParticipant(participants[instanceId]);
       }
+      templateSQL.setNeedRewriteUnderRC();
+      try (PreparedStatement statement =
+          getPreparedStatement(
+              connections[instanceId],
+              new SQLStmt(templateSQL.getSQL()),
+              args,
+              offset,
+              templateSQL)) {
+        statement.setQueryTimeout(5);
+        try (ResultSet rows = statement.executeQuery()) {
+          List<List<String>> result = new ArrayList<>();
+          long version = -1;
+          while (rows.next()) {
+            if (!result.isEmpty())
+              throw new SQLException("Distributed statements must access one row", "0A000");
+            version = rows.getLong("vid");
+            if (rows.wasNull() || version < 0)
+              throw new SQLException("vid must be a nonnegative version", "22003");
+            List<String> row = new ArrayList<>();
+            for (Column column : templateSQL.getColumnList()) {
+              if (!column.getColumnName().equalsIgnoreCase("vid"))
+                row.add(rows.getString(column.getColumnName()));
+            }
+            result.add(row);
+          }
+          if (result.isEmpty())
+            throw new SQLException("Distributed point access found no row", "0A000");
+          Map<String, Long> primaryKey = new TreeMap<>();
+          for (ConditionInfo condition : templateSQL.getWherePlaceholders()) {
+            primaryKey.put(
+                condition.getColumnName().toLowerCase(Locale.ROOT),
+                Long.parseLong(args[offset + condition.getPlaceholderIndex()]));
+          }
+          participants[instanceId].addValidationItem(
+              new org.dbiir.txnsails.execution.validation.ValidationItem(
+                      templateSQL.getTable(),
+                      meta.getIdForValidation(),
+                      templateSQL.getOp() == 0 ? LockType.SH : LockType.EX,
+                      version)
+                  .withPrimaryKey(primaryKey));
+          return wrapResults(result);
+        }
+      }
+    } catch (SQLException | RuntimeException ex) {
+      transaction.setRollbackOnly(true);
+      if (ex instanceof SQLException sql) throw sql;
+      throw new SQLException("Distributed execution failed", "40001", ex);
     }
-
-    // 3. reset the transaction meta
-    resetTransactionMeta();
-
-    // 4. remove transaction from TransactionManager
-    TransactionManager.getInstance().removeTransaction(this.transaction);
   }
 
+  public void commitFS() throws SQLException {
+    if (!isInTransaction) throw new SQLException("No active transaction", "25000");
+    TransactionManager manager = TransactionManager.getInstance();
+    try {
+      manager.prepare(transaction.getTid());
+    } catch (SQLException ex) {
+      try {
+        rollbackFS();
+      } catch (SQLException rollbackFailure) {
+        ex.addSuppressed(rollbackFailure);
+      }
+      throw ex;
+    }
+    // A commit decision must never be followed by rollback or early lock release.
+    manager.commit(transaction.getTid(), resultList);
+    manager.doAfterCommit(transaction.getTid(), true);
+    resetTransactionMeta();
+  }
 
   public void commit() throws SQLException {
     /* validate before commitment, release validation locks after commitment */
@@ -316,7 +391,7 @@ public class OnlineWorker {
     /* sample transaction if txnSails needs and choose whether sample next transaction */
     shouldSample = random.nextDouble() < SAMPLE_PROBABILITY;
     this.transactionId =
-            (int) (((System.nanoTime() << 10) | (Thread.currentThread().getId() & 0x3ff)) & mask);
+        (int) (((System.nanoTime() << 10) | (Thread.currentThread().getId() & 0x3ff)) & mask);
     // switch the isolation mode
     if (Adapter.getInstance().isInSwitchPhase()) {
       // System.out.println(this.toString() + " enters switch phase");
@@ -325,11 +400,20 @@ public class OnlineWorker {
     // System.out.println(this.toString() + " return commit()");
   }
 
-  public void beginFS() {
-    long tid = TransactionIdGenerator.generateTransactionId(id);
-    this.transaction.init(tid);
-    TransactionManager.getInstance().addTransaction(this.transaction);
-    logger.info(Thread.currentThread().getName() + " transaction #" + tid + " begin.");
+  public void beginFS() throws SQLException {
+    if (isInTransaction) throw new SQLException("Previous transaction has not finished", "25001");
+    templates.clear();
+    MetaWorker.getINSTANCE().cloneTemplatesAfterAnalysis(templates);
+    if (distributed) {
+      try {
+        long tid = TransactionIdGenerator.generateTransactionId(configuration.getInstanceID());
+        transaction.init(tid);
+        TransactionManager.getInstance().addTransaction(transaction);
+      } catch (RuntimeException ex) {
+        throw new SQLException("Cannot allocate distributed transaction ID", "58030", ex);
+      }
+    }
+    isInTransaction = true;
   }
 
   public void rollback() throws SQLException {
@@ -342,7 +426,7 @@ public class OnlineWorker {
       /* sample transaction if txnSails needs and choose whether sample next transaction */
       shouldSample = random.nextDouble() < SAMPLE_PROBABILITY;
       this.transactionId =
-              (int) (((System.nanoTime() << 10) | (Thread.currentThread().getId() & 0x3ff)) & mask);
+          (int) (((System.nanoTime() << 10) | (Thread.currentThread().getId() & 0x3ff)) & mask);
       // switch the isolation
       if (Adapter.getInstance().isInSwitchPhase()) {
         switchConnectionIsolationMode();
@@ -356,7 +440,7 @@ public class OnlineWorker {
      * 2. check the version
      */
     while (Adapter.getInstance().isInSwitchPhase()
-            && !Adapter.getInstance().isAllWorkersReadyForSwitch()) {
+        && !Adapter.getInstance().isAllWorkersReadyForSwitch()) {
       // set current thread ready, block for all thread to ready
       if (!this.switchPhaseReady) {
         this.switchPhaseReady = true;
@@ -385,13 +469,14 @@ public class OnlineWorker {
         TemplateSQL templateSQL = validationMeta.getTemplateSQL();
         LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
         ValidationMetaTable.getInstance()
-                .tryValidationLock(
-                        templateSQL.getTable(),
-                        this.transactionId,
-                        validationMeta.getIdForValidation(),
-                        lockType,
-                        Adapter.getInstance().getCCType());
-        // System.out.println(this.toString() + " validated " + validationMeta.getIdForValidation());
+            .tryValidationLock(
+                templateSQL.getTable(),
+                this.transactionId,
+                validationMeta.getIdForValidation(),
+                lockType,
+                Adapter.getInstance().getCCType());
+        // System.out.println(this.toString() + " validated " +
+        // validationMeta.getIdForValidation());
         validationMeta.setLocked(true);
       }
     } else if (lockManner == CCType.SI_TAILOR) {
@@ -400,13 +485,14 @@ public class OnlineWorker {
         TemplateSQL templateSQL = validationMeta.getTemplateSQL();
         LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
         ValidationMetaTable.getInstance()
-                .tryValidationLock(
-                        templateSQL.getTable(),
-                        this.transactionId,
-                        validationMeta.getIdForValidation(),
-                        lockType,
-                        Adapter.getInstance().getCCType());
-        // System.out.println(this.toString() + " validated " + validationMeta.getIdForValidation());
+            .tryValidationLock(
+                templateSQL.getTable(),
+                this.transactionId,
+                validationMeta.getIdForValidation(),
+                lockType,
+                Adapter.getInstance().getCCType());
+        // System.out.println(this.toString() + " validated " +
+        // validationMeta.getIdForValidation());
         validationMeta.setLocked(true);
       }
     }
@@ -424,38 +510,28 @@ public class OnlineWorker {
   }
 
   public void rollbackFS() throws SQLException {
-    assert !this.transaction.isPrepared();
-    TransactionManager.getInstance().rollback(this.transaction.getTid(), this.resultList);
-    for (AsyncResultWrapper result: this.resultList) {
-      if (!result.isSuccess()) {
-        logger.warning(Thread.currentThread().getName() + " transaction #" +
-                        this.transaction.getTid() + "rollback failed, " + result.getException().getMessage());
-        // reset the connection for this participant
-      }
-    }
-
-    // reset the transaction meta
+    if (!isInTransaction) return;
+    TransactionManager manager = TransactionManager.getInstance();
+    manager.rollback(transaction.getTid(), resultList);
+    manager.doAfterCommit(transaction.getTid(), false);
     resetTransactionMeta();
-
-    // remove transaction from TransactionManager
-    TransactionManager.getInstance().removeTransaction(this.transaction);
   }
 
   private void resetTransactionMeta() {
     clearPreviousTransactionInfo();
     for (int i = 0; i < MAX_INSTANCE_NUM; i++) {
-      this.connectionUsed[i] = false;
-      this.participants[i].reset();
-      this.resultList[i].reset();
+      connectionUsed[i] = false;
+      participants[i].reset();
+      if (resultList[i] != null) resultList[i].reset();
     }
-    this.transaction.reset();
+    transaction.reset();
   }
 
   /*
-    Find the templateSQL by the sql, use regex expression to match the sql.
-    Implement it by ast tree in the future.
-    If the templateName is not empty, then find the templateSQL by the templateName
-   */
+   Find the templateSQL by the sql, use regex expression to match the sql.
+   Implement it by ast tree in the future.
+   If the templateName is not empty, then find the templateSQL by the templateName
+  */
   private TemplateSQL findTemplateSQL(String sql) throws SQLException {
     if (Objects.equals(templateName, "")) {
       TemplateSQL templateSQL = this.templates.get(templateName).getSQLTemplateByIndex(queryIdx++);
@@ -481,27 +557,27 @@ public class OnlineWorker {
 
   private void validateSingleMeta(ValidationMeta meta) throws SQLException {
     long v =
-            ValidationMetaTable.getInstance()
-                    .getHotspotVersion(meta.getTemplateSQL().getTable(), (long) meta.getIdForValidation());
+        ValidationMetaTable.getInstance()
+            .getHotspotVersion(meta.getTemplateSQL().getTable(), (long) meta.getIdForValidation());
     if (v >= 0) {
       if (v != meta.getOldVersions()) {
         String msg =
-                String.format(
-                        "Validation failed for key %d, %s",
-                        meta.getIdForValidation(), meta.getTemplateSQL().getTable());
+            String.format(
+                "Validation failed for key %d, %s",
+                meta.getIdForValidation(), meta.getTemplateSQL().getTable());
         throw new SQLException(msg, "500", 0);
       }
     } else {
       // System.out.println(this.toString() + " fetch unknown version");
       v =
-              ValidationMetaTable.getInstance()
-                      .fetchUnknownVersionCache(
-                              meta.getTemplateSQL().getTable(), meta.getIdForValidation());
+          ValidationMetaTable.getInstance()
+              .fetchUnknownVersionCache(
+                  meta.getTemplateSQL().getTable(), meta.getIdForValidation());
       if (v != meta.getOldVersions()) {
         //          releaseValidationLocks(false);
         String msg =
-                String.format(
-                        "Validation failed for ycsb_key %d, usertable", meta.getIdForValidation());
+            String.format(
+                "Validation failed for ycsb_key %d, usertable", meta.getIdForValidation());
         throw new SQLException(msg, "500", 0);
       }
       // System.out.println(this.toString() + " fetch unknown version down");
@@ -552,8 +628,8 @@ public class OnlineWorker {
     if (lockType == LockType.EX) {
       // update the hot version cache (HVC) if the entry is cached in memory
       ValidationMetaTable.getInstance()
-              .updateHotspotVersion(
-                      templateSQL.getTable(), meta.getIdForValidation(), meta.getOldVersions() + 1);
+          .updateHotspotVersion(
+              templateSQL.getTable(), meta.getIdForValidation(), meta.getOldVersions() + 1);
     }
     meta.clearInfo();
   }
@@ -565,12 +641,12 @@ public class OnlineWorker {
     TemplateSQL templateSQL = meta.getTemplateSQL();
     LockType lockType = templateSQL.getOp() == 0 ? LockType.SH : LockType.EX;
     ValidationMetaTable.getInstance()
-            .releaseValidationLock(templateSQL.getTable(), meta.getIdForValidation(), lockType);
+        .releaseValidationLock(templateSQL.getTable(), meta.getIdForValidation(), lockType);
     if (success && lockType == LockType.EX) {
       // update the hot version cache (HVC) if the entry is cached in memory
       ValidationMetaTable.getInstance()
-              .updateHotspotVersion(
-                      templateSQL.getTable(), meta.getIdForValidation(), meta.getOldVersions() + 1);
+          .updateHotspotVersion(
+              templateSQL.getTable(), meta.getIdForValidation(), meta.getOldVersions() + 1);
     }
     meta.setLocked(false);
     meta.clearInfo();
@@ -578,7 +654,7 @@ public class OnlineWorker {
 
   private boolean shouldRewrite(TemplateSQL templateSQL, CCType t) {
     if ((t == CCType.SI_TAILOR || t == CCType.SER_TRANSITION)
-            && templateSQL.isNeedRewriteUnderSI()) {
+        && templateSQL.isNeedRewriteUnderSI()) {
       return true;
     }
 
@@ -593,7 +669,7 @@ public class OnlineWorker {
   private void switchConnectionIsolationMode() throws SQLException {
     // block for all validate transaction completed
     while (Adapter.getInstance().isInSwitchPhase()
-            && !Adapter.getInstance().isAllWorkersReadyForSwitch()) {
+        && !Adapter.getInstance().isAllWorkersReadyForSwitch()) {
       if (!this.switchPhaseReady) {
         this.switchPhaseReady = true;
         System.out.println(this.toString() + " is ready for switch");
@@ -613,7 +689,7 @@ public class OnlineWorker {
         case RC, RC_TAILOR -> conn.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
         case SI, SI_TAILOR -> conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
         case SER, SER_TRANSITION ->
-                conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+            conn.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
       }
       if (this.ccType == CCType.SER) {
         this.ccType = CCType.SER_TRANSITION;
@@ -621,9 +697,9 @@ public class OnlineWorker {
       switchFinish = true;
       conn.setAutoCommit(false);
       System.out.println(
-              Thread.currentThread().getName()
-                      + "switch finish: "
-                      + Adapter.getInstance().getNextCCType());
+          Thread.currentThread().getName()
+              + "switch finish: "
+              + Adapter.getInstance().getNextCCType());
     }
   }
 
@@ -644,16 +720,17 @@ public class OnlineWorker {
    * @throws SQLException
    */
   private final PreparedStatement getPreparedStatement(
-          Connection conn, SQLStmt stmt, String[] params, int offset, TemplateSQL templateSQL) throws SQLException {
+      Connection conn, SQLStmt stmt, String[] params, int offset, TemplateSQL templateSQL)
+      throws SQLException {
     PreparedStatement pStmt = conn.prepareStatement(stmt.getSQL());
     if (params.length - offset != templateSQL.getAllPlaceholders().size()) {
       String msg = "The length of parameters and placeholders are not matching";
       System.out.println(
-              msg
-                      + "; params.length: "
-                      + params.length
-                      + " templateSQL: "
-                      + templateSQL.getAllPlaceholders().size());
+          msg
+              + "; params.length: "
+              + params.length
+              + " templateSQL: "
+              + templateSQL.getAllPlaceholders().size());
       throw new SQLException(msg);
     }
     List<ConditionInfo> phList = templateSQL.getAllPlaceholders();
@@ -661,7 +738,7 @@ public class OnlineWorker {
     for (int i = offset; i < params.length; i++) {
       // rewrite by the type of the params
       ColumnType columnType =
-              schema.getColumnTypeByName(templateSQL.getTable(), phList.get(idx - 1).getColumnName());
+          schema.getColumnTypeByName(templateSQL.getTable(), phList.get(idx - 1).getColumnName());
       switch (columnType) {
         case INTEGER -> pStmt.setObject(idx, Integer.valueOf(params[i]));
         case BIGINT -> pStmt.setObject(idx, Long.valueOf(params[i]));
@@ -671,7 +748,7 @@ public class OnlineWorker {
         case BOOLEAN -> pStmt.setObject(idx, Boolean.valueOf(params[i]));
         default -> throw new AssertionError();
       }
-      idx ++;
+      idx++;
     }
     return (pStmt);
   }
@@ -724,7 +801,26 @@ public class OnlineWorker {
   }
 
   public void closeWorker() {
+    if (distributed && isInTransaction) {
+      try {
+        rollbackFS();
+      } catch (SQLException ex) {
+        logger.warning(
+            "Unresolved distributed transaction " + transaction.getTid() + ": " + ex.getMessage());
+      }
+    }
+    for (Connection connection : connections) {
+      if (connection != null)
+        try {
+          connection.close();
+        } catch (SQLException ignored) {
+        }
+    }
+    if (conn != null)
+      try {
+        conn.close();
+      } catch (SQLException ignored) {
+      }
     Adapter.getInstance().removeOnlineWorker(id);
-    System.out.println(this.toString() + " removes from Adapter");
   }
 }

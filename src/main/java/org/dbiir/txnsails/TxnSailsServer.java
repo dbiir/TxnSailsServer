@@ -12,8 +12,6 @@ import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
-
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.DefaultParser;
@@ -31,7 +29,6 @@ import org.dbiir.txnsails.execution.transaction.DistributionInfo;
 import org.dbiir.txnsails.execution.transaction.TransactionManager;
 import org.dbiir.txnsails.execution.utils.FileUtil;
 import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
-import org.dbiir.txnsails.partition.Partition;
 import org.dbiir.txnsails.worker.Flusher;
 import org.dbiir.txnsails.worker.MetaWorker;
 
@@ -43,14 +40,21 @@ public class TxnSailsServer {
   static boolean running = true;
 
   public static void main(String[] args)
-          throws InterruptedException, ParseException, SQLException, IOException {
+      throws InterruptedException, ParseException, SQLException, IOException {
     CommandLineParser parser = new DefaultParser();
     Options options =
-            new Options()
-                    .addOption("c", "config", true, "[required] Workload configuration file")
-                    .addOption("d", "directory", true, "Base directory for the meta files")
-                    .addOption("s", "schema", true, "Base directory for the schema sql files")
-                    .addOption("p", "phase", true, "Online predict or offline training");
+        new Options()
+            .addOption("c", "config", true, "[required] Workload configuration file")
+            .addOption("d", "directory", true, "Base directory for the meta files")
+            .addOption("s", "schema", true, "Base directory for the schema sql files")
+            .addOption("p", "phase", true, "Online predict or offline training")
+            .addOption("g", "distributed-config", true, "Distributed database configuration")
+            .addOption("l", "listen-port", true, "Client port (default 9876)")
+            .addOption(
+                "r",
+                "state-directory",
+                true,
+                "Durable transaction ID directory (default .txnsails)");
 
     CommandLine argsLine = parser.parse(options, args);
 
@@ -60,8 +64,10 @@ public class TxnSailsServer {
     String configFile = argsLine.getOptionValue("c").trim();
     JacksonXmlConfiguration xmlConfig = buildConfiguration(configFile);
 
-    String distributedConfigFile = argsLine.getOptionValue("g").trim();
-    DistributedConfig distributedConfig = buildDistributedConfig(distributedConfigFile);
+    DistributedConfig distributedConfig =
+        argsLine.hasOption("g")
+            ? buildDistributedConfig(argsLine.getOptionValue("g").trim())
+            : null;
 
     // get the number of available cores
     int availableProcessors = Runtime.getRuntime().availableProcessors();
@@ -69,25 +75,55 @@ public class TxnSailsServer {
 
     AtomicInteger genWorkerId = new AtomicInteger(0);
     WorkloadConfiguration workloadConfiguration = loadConfiguration(xmlConfig);
-    loadDatabaseInfo(workloadConfiguration, distributedConfig);
+    if (distributedConfig != null) loadDatabaseInfo(workloadConfiguration, distributedConfig);
+    boolean distributed = workloadConfiguration.getInstances().size() > 1;
     List<Connection> auxiliaryConnectionList = makeAuxiliaryConnections(workloadConfiguration);
-    ValidationMetaTable.getInstance()
-            .initHotspot(workloadConfiguration.getBenchmarkName(), auxiliaryConnectionList);
-
-    TransactionManager.getInstance().init(workloadConfiguration);
+    if (distributed) {
+      for (var instance : workloadConfiguration.getInstances()) {
+        try (Connection connection =
+                StringUtils.isEmpty(instance.getUsername())
+                    ? DriverManager.getConnection(instance.getUrl())
+                    : DriverManager.getConnection(
+                        instance.getUrl(), instance.getUsername(), instance.getPassword());
+            var statement = connection.createStatement();
+            var prepared =
+                statement.executeQuery(
+                    "SELECT gid FROM pg_prepared_xacts WHERE database = current_database()")) {
+          if (prepared.next())
+            throw new SQLException(
+                "Resolve prepared transactions before restarting TxnSails: "
+                    + prepared.getString(1),
+                "08007");
+        }
+      }
+      org.dbiir.txnsails.execution.utils.TransactionIdGenerator.configure(
+          java.nio.file.Path.of(argsLine.getOptionValue("r", ".txnsails"))
+              .resolve("instance-" + workloadConfiguration.getInstanceID() + ".ids"),
+          workloadConfiguration.getInstanceID());
+      ValidationMetaTable.getInstance()
+          .initDistributed(workloadConfiguration.getBenchmarkName(), auxiliaryConnectionList);
+      TransactionManager.getInstance().init(workloadConfiguration);
+    } else {
+      ValidationMetaTable.getInstance()
+          .initHotspot(workloadConfiguration.getBenchmarkName(), auxiliaryConnectionList);
+    }
 
     threadPool = Executors.newFixedThreadPool(128);
     try {
-      createFlushThread(
-              argsLine,
-              workloadConfiguration.getBenchmarkName(),
-              workloadConfiguration.getConcurrencyControlType());
-      System.out.println("Create Flush Thread");
-      serverSocket = new ServerSocket(9876);
+      if (!distributed) {
+        createFlushThread(
+            argsLine,
+            workloadConfiguration.getBenchmarkName(),
+            workloadConfiguration.getConcurrencyControlType());
+      } else {
+        org.dbiir.txnsails.worker.Adapter.getInstance().setUsed(false);
+      }
+      serverSocket = new ServerSocket(Integer.parseInt(argsLine.getOptionValue("l", "9876")));
       while (running) {
         try {
           Socket clientSocket = serverSocket.accept();
-          threadPool.submit(new ClientHandler(clientSocket, workloadConfiguration, genWorkerId.addAndGet(1)));
+          threadPool.submit(
+              new ClientHandler(clientSocket, workloadConfiguration, genWorkerId.addAndGet(1)));
         } catch (IOException e) {
           if (running) {
             System.out.println(List.of(e.getStackTrace()));
@@ -97,6 +133,8 @@ public class TxnSailsServer {
     } finally {
       finishFlushThread();
       threadPool.shutdown();
+      if (distributed) TransactionManager.getInstance().close();
+      for (Connection connection : auxiliaryConnectionList) connection.close();
       System.out.println("Server stopped.");
     }
   }
@@ -153,25 +191,44 @@ public class TxnSailsServer {
 
   private static void loadDatabaseInfo(WorkloadConfiguration wrkld, DistributedConfig xmlConfig) {
     wrkld.setInstances(xmlConfig.getInstances().getInstanceList());
+    Set<Integer> ids = new HashSet<>();
+    for (var instance : wrkld.getInstances()) {
+      if (instance.getId() < 0
+          || instance.getId() >= org.dbiir.txnsails.worker.OnlineWorker.MAX_INSTANCE_NUM
+          || !ids.add(instance.getId()))
+        throw new IllegalArgumentException("Invalid or duplicate database ID");
+    }
+    var local =
+        wrkld.getInstances().stream()
+            .filter(instance -> instance.getId() == wrkld.getInstanceID())
+            .findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("Missing local database instance"));
+    wrkld.setUrl(local.getUrl());
+    wrkld.setUsername(local.getUsername());
+    wrkld.setPassword(local.getPassword());
 
-    Map<String,List<Integer>> tableName2DbList = new HashMap<>();
-    for (DistributedTable table: xmlConfig.getTables().getTableList()) {
-      tableName2DbList.put(table.getName(), table.getLocations().getLocationList());
+    Map<String, List<Integer>> tableName2DbList = new HashMap<>();
+    for (DistributedTable table : xmlConfig.getTables().getTableList()) {
+      List<Integer> locations = table.getLocations().getLocationList();
+      if (locations == null || locations.isEmpty() || !ids.containsAll(locations)) {
+        throw new IllegalArgumentException("Invalid placement for " + table.getName());
+      }
+      tableName2DbList.put(table.getName().toLowerCase(Locale.ROOT), locations);
     }
     wrkld.setTableName2DbList(tableName2DbList);
     DistributionInfo.setTableName2DbList(tableName2DbList);
   }
 
   private static List<Connection> makeAuxiliaryConnections(WorkloadConfiguration workConf)
-          throws SQLException {
+      throws SQLException {
     List<Connection> connectionList = new ArrayList<>(16);
     for (int i = 0; i < DEFAULT_AUXILIARY_THREAD_NUM; i++) {
       if (StringUtils.isEmpty(workConf.getUsername())) {
         connectionList.add(DriverManager.getConnection(workConf.getUrl()));
       } else {
         connectionList.add(
-                DriverManager.getConnection(
-                        workConf.getUrl(), workConf.getUsername(), workConf.getPassword()));
+            DriverManager.getConnection(
+                workConf.getUrl(), workConf.getUsername(), workConf.getPassword()));
       }
     }
     return connectionList;
@@ -205,7 +262,7 @@ public class TxnSailsServer {
   }
 
   private static void finishFlushThread() {
-    flushThread.interrupt();
+    if (flushThread != null) flushThread.interrupt();
   }
 
   public static void closeServer() throws IOException {

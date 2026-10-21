@@ -1,297 +1,263 @@
 package org.dbiir.txnsails.execution.transaction;
 
-import org.dbiir.txnsails.common.AsyncResultWrapper;
-import org.dbiir.txnsails.common.TransactionStatus;
-import org.dbiir.txnsails.common.ValidationStatus;
-import org.dbiir.txnsails.common.messages.DoneRequest;
-import org.dbiir.txnsails.common.messages.FinalRequest;
-import org.dbiir.txnsails.common.messages.ValidationRequest;
-import org.dbiir.txnsails.execution.WorkloadConfiguration;
-import org.dbiir.txnsails.worker.OnlineWorker;
-
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.LinkedList;
+import java.util.Comparator;
 import java.util.List;
-import java.util.logging.Logger;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import org.dbiir.txnsails.common.*;
+import org.dbiir.txnsails.common.messages.*;
+import org.dbiir.txnsails.execution.WorkloadConfiguration;
 
+/** Coordinates database 2PC and owner-side validation. Commit uncertainty fails closed. */
 public class TransactionManager {
-  private static final Logger logger = Logger.getLogger(TransactionManager.class.getName());
-  private static final int TRANSACTION_HASH_SIZE = 128; // must be configured to 2^n
-  private static final int SEND_THREAD_NUM = 8; // must be configured to 2^n
-  private static final int REMOTE_PORT = 23333;
-  private static final int LOCAL_PORT = 23333;
+  private static final TransactionManager INSTANCE = new TransactionManager();
+  private final Map<Long, Transaction> transactions = new ConcurrentHashMap<>();
+  private final Map<Integer, TxnSailsRPCClient> clients = new ConcurrentHashMap<>();
   private int instanceID;
-  private static TransactionManager INSTANCE = new TransactionManager();
-  private List<List<Transaction>> localCoordinateTransactionList = new ArrayList<>(TRANSACTION_HASH_SIZE);
   private TxnSailsRPCServer rpcServer;
-  private List<List<TxnSailsRPCClient>> rpcClients;
-  private int instanceNumber;
-  private WorkloadConfiguration wrkld;
   private Thread rpcServerThread;
-  private List<Thread> rpcClientThreads = new LinkedList<>();
-  private boolean[] participantsFinish = new boolean[OnlineWorker.MAX_INSTANCE_NUM];
-  private boolean[] participantsFinishAck = new boolean[OnlineWorker.MAX_INSTANCE_NUM];
 
-  public TransactionManager() {
-    for (int i = 0; i < TRANSACTION_HASH_SIZE; i++) {
-      localCoordinateTransactionList.add(new LinkedList<>());
-    }
-    rpcClients = new LinkedList<>();
-    for (int i = 0; i < OnlineWorker.MAX_INSTANCE_NUM; i++) {
-      participantsFinish[i] = false;
-      participantsFinishAck[i] = false;
-    }
-  }
-
-  public void init(WorkloadConfiguration wrkld) {
-    this.wrkld = wrkld;
-    this.instanceID = wrkld.getInstanceID();
-    this.rpcServer = new TxnSailsRPCServer(LOCAL_PORT, wrkld);
-
-    // start rpc server
-    rpcServerThread = new Thread(rpcServer);
+  public void init(WorkloadConfiguration configuration) {
+    instanceID = configuration.getInstanceID();
+    DBInstance local =
+        configuration.getInstances().stream()
+            .filter(instance -> instance.getId() == instanceID)
+            .findFirst()
+            .orElseThrow(
+                () ->
+                    new IllegalArgumentException("Missing local database instance " + instanceID));
+    rpcServer = new TxnSailsRPCServer(local.getRpcPort(), configuration);
+    rpcServerThread = new Thread(rpcServer, "txnsails-validation-" + instanceID);
     rpcServerThread.start();
-
-    try {
-      Thread.sleep(100);
-    } catch (Exception e) {
-      throw new RuntimeException(e);
-    }
-
-    // connect the clients to the remote
-    instanceNumber = wrkld.getInstances().size();
-    for (int i = 0; i < instanceNumber; i++) {
-      rpcClients.add(new LinkedList<>());
-      if (i == instanceID) {
-        continue;
-      }
-      for (int j = 0; j < SEND_THREAD_NUM; j++) {
-        TxnSailsRPCClient rpcClient = new TxnSailsRPCClient(wrkld.getInstances().get(i), REMOTE_PORT);
-        rpcClients.get(i).add(rpcClient);
-        Thread rpcClientThread = new Thread(rpcClient);
-        rpcClientThreads.add(rpcClientThread);
-        rpcClientThread.start();
+    for (DBInstance instance : configuration.getInstances()) {
+      if (instance.getId() != instanceID) {
+        clients.put(instance.getId(), new TxnSailsRPCClient(instance, instance.getRpcPort()));
       }
     }
   }
 
   public void close() {
-    for (int i = 0; i < instanceNumber; i++) {
-      if (i == instanceID) {
-        continue;
-      }
-      // send done message
-      rpcClients.get(i).get(0).addRequest(new DoneRequest(instanceID));
-    }
-    for (int i = 0; i < instanceNumber; i++) {
-      if (i == instanceID) {
-        continue;
-      }
-
-      // send finish request to all instances
-      while (!participantsFinish[i]) {
-        try {
-          Thread.sleep(1000);
-          System.out.println("Participant-" + i + " is not finished");
-        } catch (Exception e) {
-          throw new RuntimeException(e);
-        }
-      }
-
-      // make sure all participants receive the final request
-      while (!participantsFinishAck[i]) {
-        try {
-          Thread.sleep(1000);
-          System.out.println("Participant-" + i + " is not acked");
-        } catch (Exception e) {
-          throw new RuntimeException(e);
-        }
-      }
-    }
-    for (Thread t : rpcClientThreads) {
-      t.interrupt();
-    }
-    rpcServerThread.interrupt();
-    rpcServer.closeServer();
-    System.out.println("TransactionManager closed");
+    clients.values().forEach(TxnSailsRPCClient::close);
+    if (rpcServer != null) rpcServer.closeServer();
+    if (rpcServerThread != null) rpcServerThread.interrupt();
   }
 
-  public void setParticipantsFinish(int instanceID) {
-    participantsFinish[instanceID] = true;
-  }
+  public void setParticipantsFinish(int ignored) {}
 
-  public void setParticipantsFinishAck(int instanceID) {
-    participantsFinishAck[instanceID] = true;
-  }
+  public void setParticipantsFinishAck(int ignored) {}
 
   public void initTransaction(long tid) {
-    int bucketNumber = (int)(tid & (TRANSACTION_HASH_SIZE - 1));
-    localCoordinateTransactionList.get(bucketNumber).add(new Transaction(tid, new LinkedList<>()));
+    addTransaction(new Transaction(tid));
   }
 
   public void addTransaction(Transaction transaction) {
-    int bucketNumber = (int)(transaction.getTid() & (TRANSACTION_HASH_SIZE - 1));
-    localCoordinateTransactionList.get(bucketNumber).add(transaction);
+    if (transactions.putIfAbsent(transaction.getTid(), transaction) != null) {
+      throw new IllegalStateException("Duplicate transaction ID " + transaction.getTid());
+    }
   }
 
   public void removeTransaction(Transaction transaction) {
-    int bucketNumber = (int)(transaction.getTid() & (TRANSACTION_HASH_SIZE - 1));
-    localCoordinateTransactionList.get(bucketNumber).remove(transaction);
+    transactions.remove(transaction.getTid(), transaction);
   }
 
   public void removeTransaction(long tid) {
-    int bucketNumber = (int)(tid & (TRANSACTION_HASH_SIZE - 1));
-    localCoordinateTransactionList.get(bucketNumber).remove(getTransaction(tid));
+    transactions.remove(tid);
+  }
+
+  private Transaction getTransaction(long tid) throws SQLException {
+    Transaction transaction = transactions.get(tid);
+    if (transaction == null) throw new SQLException("Unknown transaction " + tid, "25000");
+    return transaction;
+  }
+
+  private List<Participant> participants(Transaction transaction) {
+    return transaction.getParticipants().stream()
+        .sorted(Comparator.comparingInt(Participant::getInstanceID))
+        .toList();
+  }
+
+  private TxnSailsRPCClient client(int id) throws SQLException {
+    TxnSailsRPCClient client = clients.get(id);
+    if (client == null) throw new SQLException("No validation owner for database " + id, "08001");
+    return client;
   }
 
   public void prepare(long tid) throws SQLException {
     Transaction transaction = getTransaction(tid);
-    boolean distributed = transaction.getParticipants().size() > 1;
-
-    // System.out.println(Thread.currentThread().getName() + " " + tid + " " + distributed);
-    for (Participant p : transaction.getParticipants()) {
-      if (p.getInstanceID() == instanceID) {
-        p.validate(tid);
+    if (transaction.getStatus() == TransactionStatus.COMMITTING
+        || transaction.getStatus() == TransactionStatus.COMMITTED
+        || transaction.getStatus() == TransactionStatus.PREPARE_UNKNOWN) {
+      throw new SQLException("Transaction outcome is unresolved: " + tid, "08007");
+    }
+    if (transaction.getStatus() != TransactionStatus.ACTIVE) {
+      throw new SQLException("Transaction is not active", "25000");
+    }
+    if (transaction.isRollbackOnly())
+      throw new SQLException("Transaction is rollback-only", "25P02");
+    for (Participant participant : participants(transaction)) {
+      if (participant.getInstanceID() == instanceID) {
+        participant.validate(tid);
       } else {
-        // generate the message and add to the client's message queue
-        ValidationRequest req = new ValidationRequest(tid, p.getValidationSet().getValidationItems());
-        int m = SEND_THREAD_NUM;
-        rpcClients.get(p.getInstanceID()).get((int)((tid % m) + m) % m).addRequest(req);
-        p.setValidationStatus(ValidationStatus.VALIDATING);
+        participant.setValidationStatus(ValidationStatus.VALIDATING);
+        ValidationResponse response =
+            (ValidationResponse)
+                client(participant.getInstanceID())
+                    .request(
+                        new ValidationRequest(
+                            tid, participant.getValidationSet().getValidationItems()));
+        if (response.getException() != null) {
+          participant.setValidationStatus(ValidationStatus.FAILED);
+          throw new SQLException("Remote validation failed", "40001", response.getException());
+        }
+        participant.setValidationStatus(ValidationStatus.VALIDATED);
       }
-
-      if (distributed) {
+    }
+    if (transaction.getParticipants().size() > 1) {
+      for (Participant participant : participants(transaction)) {
         try {
-          PreparedStatement prepare = p.getConnection().prepareStatement("PREPARE TRANSACTION '" + tid + "-" + p.getInstanceID() + "'");
-          prepare.execute();
-          p.setStatus(TransactionStatus.PREPARED);
+          execute(
+              participant, "PREPARE TRANSACTION '" + tid + "-" + participant.getInstanceID() + "'");
+          participant.setStatus(TransactionStatus.PREPARED);
         } catch (SQLException ex) {
-          p.setStatus(TransactionStatus.PREPARE_FAILED);
+          String state = ex.getSQLState();
+          boolean rejected =
+              state != null
+                  && (state.startsWith("22")
+                      || state.startsWith("23")
+                      || state.startsWith("40")
+                      || state.startsWith("42")
+                      || state.equals("0A000")
+                      || state.equals("25P02")
+                      || state.equals("55000"));
+          if (!rejected) {
+            participant.setStatus(TransactionStatus.PREPARE_UNKNOWN);
+            transaction.setStatus(TransactionStatus.PREPARE_UNKNOWN);
+            throw new SQLException("Distributed prepare outcome is in doubt: " + tid, "08007", ex);
+          }
+          participant.setStatus(TransactionStatus.PREPARE_FAILED);
           throw ex;
         }
       }
     }
-
-    // wait for all validation finished
-    // System.out.println("Transaction #" + tid + " Waiting for all participants validation");
-    for (Participant p : transaction.getParticipants()) {
-      while (p.getValidationStatus() != ValidationStatus.VALIDATED &&
-              p.getValidationStatus() != ValidationStatus.FAILED) {
-        try {
-          Thread.sleep(0, 10000);
-        } catch (Exception e) {
-          throw new RuntimeException(e);
-        }
-//        System.out.println("Transaction #" + tid + " Waiting for validation #" + tid + "-" + p.getInstanceID() + " " + p.getValidationStatus());
-      }
-
-      if (p.getValidationStatus() == ValidationStatus.FAILED) {
-        throw new SQLException("Remote validation failed #" + tid + "-" + p.getInstanceID(), "500");
-      }
-    }
-    // System.out.println("Prepare finish");
+    transaction.setPrepared(true);
+    transaction.setStatus(TransactionStatus.PREPARED);
   }
 
-  public void commit(long tid, AsyncResultWrapper[] results) {
+  public void commit(long tid, AsyncResultWrapper[] results) throws SQLException {
     Transaction transaction = getTransaction(tid);
-
-    for (Participant p : transaction.getParticipants()) {
-      if (p.getValidationStatus() != ValidationStatus.VALIDATED) {
-        logger.warning(Thread.currentThread().getName() + " The transaction is not validated !!!" + p.getValidationStatus());
-        return;
+    if (!transaction.isPrepared() || transaction.isRollbackOnly()) {
+      throw new SQLException("Transaction has not prepared successfully", "25000");
+    }
+    for (Participant participant : participants(transaction)) {
+      if (participant.getValidationStatus() != ValidationStatus.VALIDATED) {
+        throw new SQLException("Participant is not validated", "25000");
       }
-      if (p.getConnection() != null) {
+    }
+    transaction.setStatus(TransactionStatus.COMMITTING);
+    SQLException failure = null;
+    for (Participant participant : participants(transaction)) {
+      try {
+        if (participant.getStatus() == TransactionStatus.COMMITTED) continue;
+        execute(
+            participant,
+            participant.getStatus() == TransactionStatus.PREPARED
+                ? "COMMIT PREPARED '" + tid + "-" + participant.getInstanceID() + "'"
+                : "COMMIT");
+        participant.setStatus(TransactionStatus.COMMITTED);
+      } catch (SQLException ex) {
+        if (results != null && results[participant.getInstanceID()] != null) {
+          results[participant.getInstanceID()].setException(ex);
+        }
+        if (failure == null)
+          failure = new SQLException("Distributed commit outcome is in doubt: " + tid, "08007", ex);
+        else failure.addSuppressed(ex);
+      }
+    }
+    if (failure != null) throw failure;
+    transaction.setStatus(TransactionStatus.COMMITTED);
+  }
+
+  public void rollback(long tid, AsyncResultWrapper[] results) throws SQLException {
+    Transaction transaction = getTransaction(tid);
+    if (transaction.getStatus() == TransactionStatus.COMMITTING
+        || transaction.getStatus() == TransactionStatus.COMMITTED
+        || transaction.getStatus() == TransactionStatus.PREPARE_UNKNOWN) {
+      throw new SQLException(
+          "Transaction requires recovery; rollback is forbidden for " + tid, "08007");
+    }
+    transaction.setStatus(TransactionStatus.ROLLING_BACK);
+    transaction.setRollbackOnly(true);
+    SQLException failure = null;
+    for (Participant participant : participants(transaction)) {
+      try {
+        if (participant.getStatus() == TransactionStatus.ROLLBACK) continue;
+        execute(
+            participant,
+            participant.getStatus() == TransactionStatus.PREPARED
+                ? "ROLLBACK PREPARED '" + tid + "-" + participant.getInstanceID() + "'"
+                : "ROLLBACK");
+        participant.setStatus(TransactionStatus.ROLLBACK);
+      } catch (SQLException ex) {
+        if (failure == null)
+          failure =
+              new SQLException("Distributed rollback outcome is in doubt: " + tid, "08007", ex);
+        else failure.addSuppressed(ex);
+      }
+    }
+    if (failure != null) throw failure;
+    transaction.setStatus(TransactionStatus.ROLLBACK);
+  }
+
+  public void doAfterCommit(long tid, boolean committed) throws SQLException {
+    Transaction transaction = getTransaction(tid);
+    if (transaction.getStatus()
+        != (committed ? TransactionStatus.COMMITTED : TransactionStatus.ROLLBACK)) {
+      throw new SQLException("Database participants have not all finished", "08007");
+    }
+    for (Participant participant : participants(transaction)) {
+      ValidationStatus status = participant.getValidationStatus();
+      if (status == ValidationStatus.VALIDATION_STATUS_NUM) continue;
+      if (participant.getInstanceID() == instanceID) {
+        participant.doAfterCommit(tid, committed);
+      } else {
         try {
-          if (p.getStatus() == TransactionStatus.PREPARED) {
-            PreparedStatement prepare = p.getConnection().prepareStatement("COMMIT PREPARED '" + tid + "-" + p.getInstanceID() + "'");
-            prepare.execute();
-          } else if (p.getStatus() == TransactionStatus.ACTIVE) {
-            PreparedStatement prepare = p.getConnection().prepareStatement("COMMIT");
-            prepare.execute();
+          FinalResponse response =
+              (FinalResponse)
+                  client(participant.getInstanceID())
+                      .request(
+                          new FinalRequest(
+                              tid, committed, participant.getValidationSet().getValidationItems()));
+          if (response.getException() != null) {
+            throw new SQLException("Remote finalization failed", response.getException());
           }
         } catch (SQLException ex) {
-          logger.warning("Commit failed !!!" + ex);
-          results[p.getInstanceID()].setException(ex);
+          throw new SQLException(
+              "Distributed transaction " + tid + " requires finalization recovery", "08007", ex);
         }
-      } else {
-        logger.warning("Cannot find the connection");
-      }
-    }
-  }
-
-  public void rollback(long tid, AsyncResultWrapper[] results) {
-    // wait until the status become PREPARED or ABORTED
-    Transaction transaction = getTransaction(tid);
-
-    for (Participant p: transaction.getParticipants()) {
-      if (p.getConnection() != null) {
-        try {
-          if (p.getStatus() == TransactionStatus.PREPARED) {
-            PreparedStatement prepare = p.getConnection().prepareStatement("ROLLBACK PREPARED '" + tid + "-" + p.getInstanceID() + "'");
-            prepare.execute();
-          } else if (p.getStatus() == TransactionStatus.PREPARE_FAILED || p.getStatus() == TransactionStatus.ACTIVE) {
-            PreparedStatement prepare = p.getConnection().prepareStatement("ROLLBACK");
-            prepare.execute();
-          } else {
-            logger.info("The transaction status is " + p.getStatus() + "; Validation status is " + p.getValidationStatus());
-          }
-        } catch (SQLException ex) {
-          results[p.getInstanceID()].setException(ex);
-        }
-      } else {
-        logger.warning("Cannot find the connection");
-      }
-    }
-  }
-
-  public void doAfterCommit(long tid, boolean isCommit) {
-    Transaction transaction = getTransaction(tid);
-
-    for (Participant p : transaction.getParticipants()) {
-      if (p.getValidationStatus() == ValidationStatus.FAILED) {
-        // have released the validation locks
-        continue;
-      }
-      if (p.getInstanceID() == instanceID) {
-        p.doAfterCommit(tid, isCommit);
-      } else {
-        // generate the message and add to the client's message queue
-        FinalRequest req = new FinalRequest(tid, isCommit, p.getValidationSet().getValidationItems());
-        int m = SEND_THREAD_NUM;
-        rpcClients.get(p.getInstanceID()).get((int)((tid % m) + m) % m).addRequest(req);
       }
     }
     removeTransaction(transaction);
   }
 
-  public void updateTransactionStatus(long tid, int instanceId, ValidationStatus status) {
-    Transaction transaction = getTransaction(tid);
-    for (Participant p : transaction.getParticipants()) {
-      if (p.getInstanceID() == instanceId) {
-        p.setValidationStatus(status);
-        break;
-      }
+  private void execute(Participant participant, String sql) throws SQLException {
+    if (participant.getConnection() == null)
+      throw new SQLException("Missing participant connection", "08003");
+    try (PreparedStatement statement = participant.getConnection().prepareStatement(sql)) {
+      statement.execute();
     }
   }
 
-  private Transaction getTransaction(long tid) {
-    int bucketNumber = (int)(tid & (TRANSACTION_HASH_SIZE - 1));
-    for (Transaction transaction : localCoordinateTransactionList.get(bucketNumber)) {
-      if (transaction.getTid() == tid) {
-        return transaction;
-      }
-    }
-    logger.warning("Cannot find the transaction!!!");
-    return null;
+  public void updateTransactionStatus(long tid, int id, ValidationStatus status) {
+    Transaction transaction = transactions.get(tid);
+    if (transaction != null)
+      transaction.getParticipants().stream()
+          .filter(participant -> participant.getInstanceID() == id)
+          .forEach(p -> p.setValidationStatus(status));
   }
 
   public static TransactionManager getInstance() {
     return INSTANCE;
   }
 }
-
-/* TODO:
- * 1. modify the generation of tid in SmallbankWorker.java
- */
