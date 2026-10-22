@@ -1,0 +1,29 @@
+# Fixed workload for both owners. Changing it requires a coordinated quiescent restart.
+version = 1
+closed_world = true
+
+[[programs]]
+name = "read_pair"
+[[programs.statements]]
+id = 0
+operation = "read"
+relation = "usertable"
+sql = "SELECT field1 FROM usertable WHERE ycsb_key = ?"
+[[programs.statements]]
+id = 1
+operation = "read"
+relation = "usertable"
+sql = "SELECT field1 FROM usertable WHERE ycsb_key = ?"
+
+[[programs]]
+name = "write_pair"
+[[programs.statements]]
+id = 0
+operation = "write"
+relation = "usertable"
+sql = "UPDATE usertable SET field1 = ? WHERE ycsb_key = ?"
+[[programs.statements]]
+id = 1
+operation = "write"
+relation = "usertable"
+sql = "UPDATE usertable SET field1 = ? WHERE ycsb_key = ?"

@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import lombok.Getter;
 import lombok.Setter;
 import org.dbiir.txnsails.analysis.ChordAbsentCycleFinder;
+import org.dbiir.txnsails.analysis.ClosedWorkload;
 import org.dbiir.txnsails.analysis.SchemaInfo;
 import org.dbiir.txnsails.common.*;
 import org.dbiir.txnsails.common.constants.SmallBankConstants;
@@ -24,6 +25,7 @@ import org.dbiir.txnsails.common.types.DependencyType;
 public class MetaWorker {
   @Getter private static MetaWorker INSTANCE = new MetaWorker();
   private HashMap<String, TransactionTemplate> templates = new HashMap<>();
+  private ClosedWorkload closedWorkload;
   private StaticDependencyGraph sdg = new StaticDependencyGraph();
   private AtomicInteger globalTransactionGenerator;
   private int globalTemplateTypeGenerator;
@@ -47,6 +49,7 @@ public class MetaWorker {
   }
 
   public synchronized void registerTemplateName(String template_name) {
+    requireDynamicRegistration();
     templates.computeIfAbsent(
         template_name, k -> new TransactionTemplate(template_name, globalTemplateTypeGenerator));
     globalTemplateTypeGenerator <<= 1;
@@ -54,12 +57,14 @@ public class MetaWorker {
 
   public synchronized int registerTemplateSQL(
       String template_name, int op, String relation, String sql) {
+    requireDynamicRegistration();
     templates.computeIfAbsent(template_name, k -> new TransactionTemplate(template_name));
     return templates.get(template_name).addTemplateSQL(op, relation, sql);
   }
 
   public synchronized int registerTemplateSQL(
       String template_name, int op, String relation, String sql, int idx) {
+    requireDynamicRegistration();
     templates.computeIfAbsent(template_name, k -> new TransactionTemplate(template_name));
     templates.get(template_name).setSkipIndex(idx, true);
     return templates.get(template_name).addTemplateSQL(op, relation, sql);
@@ -80,6 +85,7 @@ public class MetaWorker {
    * templates
    */
   public synchronized void analysisWorkload() {
+    requireDynamicRegistration();
     // construct the static dependency graph
     this.sdg = new StaticDependencyGraph();
     for (Map.Entry<String, TransactionTemplate> entry : templates.entrySet()) {
@@ -175,6 +181,20 @@ public class MetaWorker {
       HashMap<String, TransactionTemplate> cloneTemplates) {
     for (Map.Entry<String, TransactionTemplate> entry : templates.entrySet()) {
       cloneTemplates.put(entry.getKey(), entry.getValue().clone());
+    }
+  }
+
+  public synchronized void installClosedWorkload(ClosedWorkload workload) {
+    if (workload == null || closedWorkload != null || !templates.isEmpty()) {
+      throw new IllegalStateException("Install a closed workload once, before registration");
+    }
+    templates = new HashMap<>(workload.templates());
+    closedWorkload = workload;
+  }
+
+  private void requireDynamicRegistration() {
+    if (closedWorkload != null) {
+      throw new IllegalStateException("Closed workload registration and analysis are immutable");
     }
   }
 

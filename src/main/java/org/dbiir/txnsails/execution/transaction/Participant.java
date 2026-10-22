@@ -5,9 +5,11 @@ import java.sql.SQLException;
 import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
+import org.dbiir.txnsails.common.TransactionIdentity;
 import org.dbiir.txnsails.common.TransactionStatus;
 import org.dbiir.txnsails.common.ValidationStatus;
 import org.dbiir.txnsails.common.types.LockType;
+import org.dbiir.txnsails.execution.validation.CertificationContext;
 import org.dbiir.txnsails.execution.validation.ValidationItem;
 import org.dbiir.txnsails.execution.validation.ValidationSet;
 
@@ -20,6 +22,8 @@ public class Participant {
   private Connection connection;
   private volatile ValidationStatus validationStatus;
   private ValidationSet validationSet;
+  private int nativeIsolation = Connection.TRANSACTION_SERIALIZABLE;
+  private CertificationContext certificationContext = CertificationContext.FULL;
 
   public Participant(
       int instanceId,
@@ -63,13 +67,17 @@ public class Participant {
   }
 
   public void validate(long tid) throws SQLException {
+    validate(new TransactionIdentity(0, tid));
+  }
+
+  public void validate(TransactionIdentity transaction) throws SQLException {
     // System.out.println("local validate " + tid);
     int itemCount = validationSet.getItemCount();
     for (int validationPhase = 0; validationPhase < itemCount; validationPhase++) {
       try {
-        validationSet.get(validationPhase).validate(tid);
+        validationSet.get(validationPhase).validate(transaction, certificationContext);
       } catch (SQLException | RuntimeException ex) {
-        releaseValidationLocks(tid, validationPhase);
+        releaseValidationLocks(transaction, validationPhase);
         validationStatus = ValidationStatus.FAILED;
         if (ex instanceof SQLException sql) throw sql;
         throw new SQLException("Participant validation failed", "40001", ex);
@@ -79,16 +87,20 @@ public class Participant {
     // System.out.println("local validate finished " + validationStatus);
   }
 
-  private void releaseValidationLocks(long tid, int validationPhase) {
+  private void releaseValidationLocks(TransactionIdentity transaction, int validationPhase) {
     for (int i = 0; i < validationPhase; i++) {
-      validationSet.get(i).releaseValidationLock(tid);
+      validationSet.get(i).releaseValidationLock(transaction);
     }
   }
 
   public void doAfterCommit(long tid, boolean isCommit) {
+    doAfterCommit(new TransactionIdentity(0, tid), isCommit);
+  }
+
+  public void doAfterCommit(TransactionIdentity transaction, boolean isCommit) {
     int itemCount = validationSet.getItemCount();
     for (int i = 0; i < itemCount; i++) {
-      validationSet.get(i).doAfterCommit(tid, isCommit);
+      validationSet.get(i).doAfterCommit(transaction, isCommit);
     }
   }
 
@@ -96,5 +108,6 @@ public class Participant {
     validationSet.reset();
     status = TransactionStatus.ACTIVE;
     validationStatus = ValidationStatus.VALIDATION_STATUS_NUM;
+    certificationContext = CertificationContext.FULL;
   }
 }

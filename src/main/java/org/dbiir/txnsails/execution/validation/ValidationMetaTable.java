@@ -9,6 +9,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import lombok.Getter;
+import org.dbiir.txnsails.common.TransactionIdentity;
 import org.dbiir.txnsails.common.constants.SmallBankConstants;
 import org.dbiir.txnsails.common.constants.TPCCConstants;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
@@ -24,7 +25,7 @@ public class ValidationMetaTable {
     }
   }
 
-  private final ConcurrentHashMap<RowKey, ValidationLock> distributedLocks =
+  private final ConcurrentHashMap<RowKey, DistributedValidationEntry> distributedLocks =
       new ConcurrentHashMap<>();
   private boolean distributed;
   private int LOAD_THREAD = 16;
@@ -60,30 +61,67 @@ public class ValidationMetaTable {
   }
 
   public void releaseDistributedValidationLock(String table, long tid, String key) {
-    ValidationLock lock = distributedLocks.get(new RowKey(table, key));
-    if (lock != null) lock.releaseDistributedLock(tid);
+    releaseDistributedValidationLock(table, new TransactionIdentity(0, tid), key);
+  }
+
+  public void releaseDistributedValidationLock(
+      String table, TransactionIdentity transaction, String key) {
+    DistributedValidationEntry entry = distributedLocks.get(new RowKey(table, key));
+    if (entry != null) entry.release(transaction);
+  }
+
+  public DistributedValidationEntry acquireDistributedValidationLock(
+      String table, long tid, String key, boolean read, boolean write, CertificationContext context)
+      throws SQLException {
+    return acquireDistributedValidationLock(
+        table, new TransactionIdentity(0, tid), key, read, write, context);
+  }
+
+  public DistributedValidationEntry acquireDistributedValidationLock(
+      String table,
+      TransactionIdentity transaction,
+      String key,
+      boolean read,
+      boolean write,
+      CertificationContext context)
+      throws SQLException {
+    if (!distributed) throw new SQLException("Distributed validation is not initialized", "55000");
+    DistributedValidationEntry entry =
+        distributedLocks.computeIfAbsent(
+            new RowKey(table, key), ignored -> new DistributedValidationEntry());
+    if (!entry.tryAcquire(transaction, read, write, context)) {
+      throw new SQLException(
+          "Distributed validation lock conflict: " + table + " key=" + key, "40001");
+    }
+    return entry;
   }
 
   public void tryDistributedValidationLock(String table, long tid, String key, LockType type)
       throws SQLException {
-    if (!distributed) throw new SQLException("Distributed validation is not initialized", "55000");
-    ValidationLock lock =
-        distributedLocks.computeIfAbsent(new RowKey(table, key), ignored -> new ValidationLock(0));
-    if (lock.tryLock(tid, type, CCType.SER) < 0) {
-      throw new SQLException(
-          "Distributed validation lock conflict: " + table + " key=" + key, "40001");
-    }
+    tryDistributedValidationLock(table, new TransactionIdentity(0, tid), key, type);
+  }
+
+  public void tryDistributedValidationLock(
+      String table, TransactionIdentity transaction, String key, LockType type)
+      throws SQLException {
+    acquireDistributedValidationLock(
+        table,
+        transaction,
+        key,
+        type == LockType.SH,
+        type == LockType.EX,
+        CertificationContext.FULL);
   }
 
   public long getDistributedVersion(String table, String key) {
-    ValidationLock lock = distributedLocks.get(new RowKey(table, key));
-    return lock == null ? -1 : lock.getVersion();
+    DistributedValidationEntry entry = distributedLocks.get(new RowKey(table, key));
+    return entry == null ? -1 : entry.latestVersion();
   }
 
   public void updateDistributedVersion(String table, String key, long version) {
     distributedLocks
-        .computeIfAbsent(new RowKey(table, key), ignored -> new ValidationLock(0))
-        .updateVersion(version);
+        .computeIfAbsent(new RowKey(table, key), ignored -> new DistributedValidationEntry())
+        .publish(version, false);
   }
 
   public long fetchDistributedVersion(String table, String key, String query, List<Long> values)
@@ -106,13 +144,30 @@ public class ValidationMetaTable {
     }
   }
 
-  public void initHotspot(String workload, List<Connection> connections) throws SQLException {
+  /** Native fixed SER needs benchmark metadata, but no middleware row/version caches. */
+  public void initSingleSerializable(String workload, List<Connection> connections) {
+    initializeSingle(workload, connections);
+    validationLocks.clear();
+    validationBucketLocks.clear();
+    rangeValidationLocks.clear();
+    distributedLocks.clear();
+  }
+
+  private void initializeSingle(String workload, List<Connection> connections) {
+    if (connections == null || connections.isEmpty())
+      throw new IllegalArgumentException("Hotspot validation requires a positive auxiliary pool");
     this.distributed = false;
     this.workload = workload;
     this.connections = connections;
+    LOAD_THREAD = connections.size();
+    connectionGuards.clear();
     for (int i = 0; i < connections.size(); i++) {
       connectionGuards.add(new ReentrantLock());
     }
+  }
+
+  public void initHotspot(String workload, List<Connection> connections) throws SQLException {
+    initializeSingle(workload, connections);
 
     ExecutorService executor = Executors.newFixedThreadPool(LOAD_THREAD);
     switch (workload) {
@@ -340,13 +395,7 @@ public class ValidationMetaTable {
   public void tryValidationLock(String table, long tid, long key, LockType type, CCType ccType)
       throws SQLException {
     if (distributed && ccType == CCType.SER) {
-      ValidationLock lock =
-          distributedLocks.computeIfAbsent(
-              new RowKey(table, Long.toString(key)), ignored -> new ValidationLock(key));
-      if (lock.tryLock(tid, type, ccType) < 0) {
-        throw new SQLException(
-            "Distributed validation lock conflict: " + table + " key=" + key, "40001");
-      }
+      tryDistributedValidationLock(table, tid, Long.toString(key), type);
       return;
     }
     if (!validationLocks.containsKey(table)) {
@@ -541,10 +590,7 @@ public class ValidationMetaTable {
 
   public void updateHotspotVersion(String table, long key, long tid) {
     if (distributed) {
-      distributedLocks
-          .computeIfAbsent(
-              new RowKey(table, Long.toString(key)), ignored -> new ValidationLock(key))
-          .updateVersion(tid);
+      updateDistributedVersion(table, Long.toString(key), tid);
       return;
     }
     int bucketNum = (int) (key % getHashSizeByRelationName(table));
@@ -559,10 +605,7 @@ public class ValidationMetaTable {
   }
 
   public long getHotspotVersion(String table, long key) {
-    if (distributed) {
-      ValidationLock lock = distributedLocks.get(new RowKey(table, Long.toString(key)));
-      return lock == null ? -1 : lock.getVersion();
-    }
+    if (distributed) return getDistributedVersion(table, Long.toString(key));
     if (!validationLocks.containsKey(table)) {
       String msg = "unknown table name: " + table;
       throw new RuntimeException(msg);

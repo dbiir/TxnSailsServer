@@ -17,6 +17,40 @@ class CoordinatorFailureTest {
   private String faultState = "08006";
 
   @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(strings = {"40001", "40P01"})
+  void definiteSingleParticipantCommitAbortCanFinalizeAndReleaseLocks(String state)
+      throws Exception {
+    faultState = state;
+    TransactionManager manager = manager();
+    Participant participant = new Participant(0, connection(0, "COMMIT"));
+    participant.addValidationItem("usertable", 0, LockType.EX, 1);
+    Transaction transaction = new Transaction(71, List.of(participant));
+    manager.addTransaction(transaction);
+    manager.prepare(71);
+    assertEquals(
+        state, assertThrows(SQLException.class, () -> manager.commit(71, null)).getSQLState());
+    assertEquals(TransactionStatus.ROLLBACK, transaction.getStatus());
+    manager.doAfterCommit(71, false);
+    assertEquals(-1, ValidationMetaTable.getInstance().getHotspotVersion("usertable", 0));
+    new ValidationItem("usertable", 0, LockType.EX, 2).validate(72);
+  }
+
+  @Test
+  void lostSingleParticipantCommitReplyStillRetainsLocks() throws Exception {
+    TransactionManager manager = manager();
+    Participant participant = new Participant(0, connection(0, "COMMIT"));
+    participant.addValidationItem("usertable", 0, LockType.EX, 1);
+    Transaction transaction = new Transaction(81, List.of(participant));
+    manager.addTransaction(transaction);
+    manager.prepare(81);
+    assertEquals(
+        "08007", assertThrows(SQLException.class, () -> manager.commit(81, null)).getSQLState());
+    assertThrows(SQLException.class, () -> manager.rollback(81, null));
+    assertThrows(
+        SQLException.class, () -> new ValidationItem("usertable", 0, LockType.EX, 2).validate(82));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
   @org.junit.jupiter.params.provider.ValueSource(strings = {"08006", "57P01", "XX000"})
   void lostPrepareAcknowledgementRetainsLocksAndPreventsRollback(String state) throws Exception {
     faultState = state;

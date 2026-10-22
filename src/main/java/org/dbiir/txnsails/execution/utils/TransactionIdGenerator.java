@@ -8,10 +8,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Node IDs occupy the low byte; durable counter blocks prevent reuse after coordinator restart. */
+/** Durable local sequences; the full coordinator ID travels separately in TransactionIdentity. */
 public final class TransactionIdGenerator {
   private static final long BLOCK_SIZE = 4096;
-  private static final long MAX_COUNTER = Long.MAX_VALUE >>> 8;
+  private static final long MAX_COUNTER = Long.MAX_VALUE;
   private static final AtomicLong EPHEMERAL = new AtomicLong(System.currentTimeMillis() << 10);
   private static final Map<Integer, Allocator> ALLOCATORS = new HashMap<>();
 
@@ -47,8 +47,9 @@ public final class TransactionIdGenerator {
           }
         }
         long candidateNext = Math.max(previous, System.currentTimeMillis() << 10);
-        long candidateLimit = Math.addExact(candidateNext, BLOCK_SIZE);
-        if (candidateLimit > MAX_COUNTER) throw new IOException("Transaction ID space exhausted");
+        if (candidateNext > MAX_COUNTER - BLOCK_SIZE)
+          throw new IOException("Transaction ID space exhausted");
+        long candidateLimit = candidateNext + BLOCK_SIZE;
         ByteBuffer checkpoint =
             ByteBuffer.allocate(16).putLong(candidateLimit).putLong(~candidateLimit);
         checkpoint.flip();
@@ -86,24 +87,10 @@ public final class TransactionIdGenerator {
       }
       counter = allocator.next++;
     }
-    return (counter << 8) | instanceID;
-  }
-
-  public static int extractId(long tid) {
-    return (int) (tid & 255);
-  }
-
-  /** Legacy accessor: these bits now hold a logical sequence, not a JVM thread ID. */
-  @Deprecated
-  public static long extractThreadId(long tid) {
-    return (tid >>> 8) & 1023;
-  }
-
-  public static long extractTimestamp(long tid) {
-    return tid >>> 18;
+    return counter;
   }
 
   private static void validateId(int id) {
-    if (id < 0 || id > 255) throw new IllegalArgumentException("Instance ID must be in [0,255]");
+    if (id < 0) throw new IllegalArgumentException("Instance ID must be nonnegative");
   }
 }

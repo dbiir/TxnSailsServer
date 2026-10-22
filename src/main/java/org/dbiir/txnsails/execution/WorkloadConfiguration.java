@@ -22,18 +22,18 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
 import lombok.Getter;
 import lombok.Setter;
+import org.dbiir.txnsails.analysis.ClosedWorkload;
 import org.dbiir.txnsails.common.DBInstance;
+import org.dbiir.txnsails.common.JacksonXmlConfiguration;
 import org.dbiir.txnsails.common.types.CCType;
 import org.dbiir.txnsails.common.types.DatabaseType;
-import org.dbiir.txnsails.common.JacksonXmlConfiguration;
-import org.dbiir.txnsails.partition.Partition;
-import org.dbiir.txnsails.partition.PartitionConfig;
+import org.dbiir.txnsails.common.types.DeploymentMode;
 import org.dbiir.txnsails.worker.Adapter;
 
-@Setter @Getter
+@Setter
+@Getter
 public class WorkloadConfiguration {
 
   private DatabaseType databaseType;
@@ -51,12 +51,16 @@ public class WorkloadConfiguration {
   private JacksonXmlConfiguration xmlConfig = null;
   private boolean parallelExecution;
   private int instanceID;
+  private boolean optimizedDistributedValidation = true;
+  private DeploymentMode deploymentMode;
+  private int auxiliaryConnections = 16;
+  private ClosedWorkload closedWorkload;
   private List<DBInstance> instances = new ArrayList<>();
-  private Map<String,List<Integer>> tableName2DbList = new HashMap<>();
+  private Map<String, List<Integer>> tableName2DbList = new HashMap<>();
 
   @Getter
   private int isolationMode =
-          Connection.TRANSACTION_SERIALIZABLE; // always providing serializable execution
+      Connection.TRANSACTION_SERIALIZABLE; // always providing serializable execution
 
   @Getter private CCType concurrencyControlType = CCType.SER;
 
@@ -82,29 +86,22 @@ public class WorkloadConfiguration {
   @Setter private boolean reconnectOnConnectionFailure = false;
 
   public void setConcurrencyControlType(String type) {
-    switch (type) {
-      case "SERIALIZABLE":
-        this.concurrencyControlType = CCType.SER;
-        break;
-      case "SI_TAILOR":
-        this.concurrencyControlType = CCType.SI_TAILOR;
-        break;
-      case "RC_TAILOR":
-        this.concurrencyControlType = CCType.RC_TAILOR;
-        break;
-      case "DYNAMIC":
-        this.concurrencyControlType = CCType.DYNAMIC;
-        Adapter.getInstance().setUsed(true);
-        break;
-      case "RC":
-        this.concurrencyControlType = CCType.RC;
-        break;
-      case "SI":
-        this.concurrencyControlType = CCType.SI;
-        break;
-      default:
-        this.concurrencyControlType = CCType.NUM_CC;
-    }
+    if (type == null) throw new IllegalArgumentException("Concurrency control is required");
+    this.concurrencyControlType =
+        switch (type.trim().toUpperCase(java.util.Locale.ROOT).replace("TRANSACTION_", "")) {
+          case "SER", "SERIALIZABLE" -> CCType.SER;
+          case "SI", "REPEATABLE_READ" -> CCType.SI;
+          case "RC", "READ_COMMITTED" -> CCType.RC;
+          case "SI_TAILOR" -> CCType.SI_TAILOR;
+          case "RC_TAILOR" -> CCType.RC_TAILOR;
+          case "DYNAMIC" -> CCType.DYNAMIC;
+          default -> throw new IllegalArgumentException("Unsupported concurrency control: " + type);
+        };
+    if (concurrencyControlType == CCType.DYNAMIC) Adapter.getInstance().setUsed(true);
+  }
+
+  public boolean isDistributedMode() {
+    return deploymentMode != null ? deploymentMode != DeploymentMode.SINGLE : instances.size() > 1;
   }
 
   /**
@@ -149,34 +146,34 @@ public class WorkloadConfiguration {
   @Override
   public String toString() {
     return "WorkloadConfiguration{"
-            + ", databaseType="
-            + databaseType
-            + ", benchmarkName='"
-            + benchmarkName
-            + '\''
-            + ", url='"
-            + url
-            + '\''
-            + ", username='"
-            + username
-            + '\''
-            + ", password='"
-            + password
-            + '\''
-            + ", driverClass='"
-            + driverClass
-            + '\''
-            + ", batchSize="
-            + batchSize
-            + ", maxRetries="
-            + maxRetries
-            + ", scaleFactor="
-            + scaleFactor
-            + ", selectivity="
-            + selectivity
-            + ", terminals="
-            + terminals
-            + '\''
-            + '}';
+        + ", databaseType="
+        + databaseType
+        + ", benchmarkName='"
+        + benchmarkName
+        + '\''
+        + ", url='"
+        + url
+        + '\''
+        + ", username='"
+        + username
+        + '\''
+        + ", password='"
+        + password
+        + '\''
+        + ", driverClass='"
+        + driverClass
+        + '\''
+        + ", batchSize="
+        + batchSize
+        + ", maxRetries="
+        + maxRetries
+        + ", scaleFactor="
+        + scaleFactor
+        + ", selectivity="
+        + selectivity
+        + ", terminals="
+        + terminals
+        + '\''
+        + '}';
   }
 }

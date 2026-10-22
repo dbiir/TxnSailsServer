@@ -1,9 +1,12 @@
 # TxnSails
 The code base of "TxnSails: Achieving Serializable **Transaction** Scheduling with **S**elf-**A**daptive **I**solation **L**evel **S**election" and its distributed extension.
 
-For distributed PostgreSQL deployment, supported SQL, isolation configuration, and
-recovery requirements, see [Distributed transactions](docs/distributed-transactions.md)
-and [the example placement configuration](config/distributed-example.xml).
+Configure `single`, `distributed` and `mock` execution in
+[one TOML file](config/txnsails.toml), including all datasource settings. See the
+[deployment guide](docs/local-distributed-mode.md) for startup and adding nodes,
+and [Distributed transactions](docs/distributed-transactions.md) for supported SQL,
+isolation and recovery. Mock mode runs real distributed branches on a shared
+PostgreSQL datasource. Node IDs may be sparse and the topology has no fixed node-count cap.
 
 ## Brief introduction
 TxnSails works in the middle tier between database and application. It meets three requirements:
@@ -80,7 +83,7 @@ We utilize BenchBase as our benchmark simulator, deploying it on a single server
 We deployed PostgreSQL 15.2 as the database engine. For our database configuration, we allocated a buffer pool size of 24GB, limited the maximum number of connections to 2000, and established a lock wait timeout of 100 ms. To eliminate network-related variables from affecting the results, both TxnSails and PostgreSQL were deployed on another server.
 
 ### How to Build
-TxnSails requires JDK 21 and Maven 3.9+ for compilation. To run the build scripts, you need to ensure that Python 3.9+ is installed. Meanwhile, the packages used in Python are listed as following.
+TxnSails requires JDK 21 and Maven 3.9+ for compilation. To run the build scripts, you need to ensure that Python 3.11+ is installed. Meanwhile, the packages used in Python are listed as following.
 | Package | Version |
 | ------  | ------- |
 |torch    |2.1.2+cu121  |
@@ -103,7 +106,14 @@ mvn clean package -Dmaven.javadoc.skip=true -Dcheckstyle.skip=true -Drat.skip=tr
 This command will compile the project and the fat jar can be found in `target` folder.
 
 ### How to Run
-We provide python scripts located in the `scripts/` folder to generate the corresponding `.xml` configuration files in both server and client. Before running the tests, you should modify the information in the python script to ensure the generation of configuration files that meet the requirements, including the JDBC connection URL to connect to the database, and the database username and password. Your should generate configuration in both server and client.
+Configure server datasource and execution settings in `config/txnsails.toml`.
+Run the server with `--mode single`, `--mode distributed`, or `--mode mock`; the
+root TOML `mode` supplies the default. Distributed and mock nodes use
+`--instance-id` to select their entry. See the deployment guide above for complete commands.
+
+The scripts in `scripts/` generate legacy benchmark-client XML workloads and read
+their datasource values from the same TOML file. Set `TXNSAILS_CONFIG` to select a
+different TOML file for generation. Server startup reads TOML directly.
 
 For example, you can run the following command generate your ycsb configuration files:
 

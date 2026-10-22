@@ -2,12 +2,11 @@ package org.dbiir.txnsails.common;
 
 import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
+import java.util.ArrayList;
+import java.util.List;
 import lombok.Getter;
 import lombok.Setter;
 import org.dbiir.txnsails.partition.PartitionConfig;
-
-import java.util.ArrayList;
-import java.util.List;
 
 @Setter
 @Getter
@@ -73,9 +72,10 @@ public class JacksonXmlConfiguration {
   public JacksonXmlConfiguration() {
     this.type = "postgresql";
     this.driver = "org.postgresql.Driver";
-    this.url = "jdbc:postgresql://localhost:5432/osprey";
-    this.username = "postgres";
-    this.password = "Ss123!@#";
+    // Connection defaults live in the unified TOML, never in legacy workload XML metadata.
+    this.url = null;
+    this.username = "";
+    this.password = "";
     this.reconnectOnConnectionFailure = true;
     this.newConnectionPerTxn = false;
     this.isolation = "SERIALIZABLE";

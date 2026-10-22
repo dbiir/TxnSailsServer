@@ -13,12 +13,81 @@ import net.sf.jsqlparser.statement.select.*;
 import net.sf.jsqlparser.statement.update.Update;
 import org.dbiir.txnsails.analysis.SchemaInfo;
 import org.dbiir.txnsails.common.TemplateSQL;
+import org.dbiir.txnsails.common.types.LockType;
+import org.dbiir.txnsails.execution.validation.ValidationItem;
 
 /** Rejects statements whose complete dependency set cannot be represented by one row key. */
 public final class DistributedSQL {
   private DistributedSQL() {}
 
   public static void validate(TemplateSQL template, SchemaInfo schema) throws SQLException {
+    plan(template, schema);
+  }
+
+  public static Plan plan(TemplateSQL template, SchemaInfo schema) throws SQLException {
+    Plan plan = template.getDistributedPlanCache().get(template, schema);
+    template.applyDistributedRewrite(plan.executionSQL(), plan.resultColumns());
+    return plan;
+  }
+
+  /** A template-owned one-entry cache shared by its clones; schema replacement invalidates it. */
+  public static final class PlanCache {
+    private volatile CachedPlan cached;
+
+    private Plan get(TemplateSQL template, SchemaInfo schema) throws SQLException {
+      CachedPlan current = cached;
+      if (current == null || current.schema() != schema) {
+        synchronized (this) {
+          current = cached;
+          if (current == null || current.schema() != schema) {
+            try {
+              current = new CachedPlan(schema, compile(template, schema), null, null);
+            } catch (SQLException failure) {
+              current = new CachedPlan(schema, null, failure.getMessage(), failure.getSQLState());
+            }
+            cached = current;
+          }
+        }
+      }
+      if (current.plan() == null)
+        throw new SQLException(current.failureMessage(), current.failureState());
+      return current.plan();
+    }
+  }
+
+  private record CachedPlan(
+      SchemaInfo schema, Plan plan, String failureMessage, String failureState) {}
+
+  public record Plan(
+      String table,
+      List<String> primaryKeyColumns,
+      List<Integer> parameterIndexes,
+      String versionQuery,
+      String executionSQL,
+      List<String> resultColumns) {
+    public Plan {
+      primaryKeyColumns = List.copyOf(primaryKeyColumns);
+      parameterIndexes = List.copyOf(parameterIndexes);
+      resultColumns = List.copyOf(resultColumns);
+    }
+
+    public ValidationItem item(
+        long placementKey, LockType type, long version, String[] args, int offset) {
+      List<Long> values = new ArrayList<>(primaryKeyColumns.size());
+      StringBuilder identity = new StringBuilder("{");
+      for (int i = 0; i < primaryKeyColumns.size(); i++) {
+        long value = Long.parseLong(args[offset + parameterIndexes.get(i)]);
+        values.add(value);
+        if (i > 0) identity.append(", ");
+        identity.append(primaryKeyColumns.get(i)).append('=').append(value);
+      }
+      identity.append('}');
+      return new ValidationItem(table, placementKey, type, version)
+          .withPrimaryKey(identity.toString(), versionQuery, values);
+    }
+  }
+
+  private static Plan compile(TemplateSQL template, SchemaInfo schema) throws SQLException {
     try {
       var statement = CCJSqlParserUtil.parse(template.getOriginSQL());
       Set<String> primaryKey = new HashSet<>();
@@ -75,6 +144,27 @@ public final class DistributedSQL {
       Set<String> predicates = new HashSet<>();
       checkPredicate(where, predicates);
       if (!predicates.equals(primaryKey)) throw unsupported();
+      Map<String, Integer> indexes = new TreeMap<>();
+      for (var condition : template.getWherePlaceholders()) {
+        indexes.put(
+            condition.getColumnName().toLowerCase(Locale.ROOT), condition.getPlaceholderIndex());
+      }
+      if (indexes.size() != primaryKey.size()) throw unsupported();
+      String versionQuery =
+          "SELECT vid FROM "
+              + template.getTable()
+              + " WHERE "
+              + indexes.keySet().stream()
+                  .map(column -> column + " = ?")
+                  .collect(java.util.stream.Collectors.joining(" AND "));
+      template.setNeedRewriteUnderRC();
+      return new Plan(
+          template.getTable(),
+          new ArrayList<>(indexes.keySet()),
+          new ArrayList<>(indexes.values()),
+          versionQuery,
+          template.getSQL(),
+          template.getColumnList().stream().map(Column::getColumnName).toList());
     } catch (SQLException ex) {
       throw ex;
     } catch (Exception ex) {

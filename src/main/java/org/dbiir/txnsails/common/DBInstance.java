@@ -30,6 +30,17 @@ public class DBInstance {
 
   public DBInstance() {}
 
+  public int jdbcIsolation(org.dbiir.txnsails.common.types.CCType fallback)
+      throws java.sql.SQLException {
+    String level = isolation == null ? fallback.name() : isolation;
+    return switch (level.toUpperCase(java.util.Locale.ROOT).replace("TRANSACTION_", "")) {
+      case "RC", "RC_TAILOR", "READ_COMMITTED" -> java.sql.Connection.TRANSACTION_READ_COMMITTED;
+      case "SI", "SI_TAILOR", "REPEATABLE_READ" -> java.sql.Connection.TRANSACTION_REPEATABLE_READ;
+      case "SER", "SERIALIZABLE", "DYNAMIC" -> java.sql.Connection.TRANSACTION_SERIALIZABLE;
+      default -> throw new java.sql.SQLException("Unsupported database isolation " + level);
+    };
+  }
+
   public DBInstance(int id, String url, String host, String username, String password) {
     this.id = id;
     this.url = url;

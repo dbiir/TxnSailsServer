@@ -105,9 +105,27 @@ class DistributedRegressionTest {
     TransactionIdGenerator.configure(checkpoint, 7);
     long second = TransactionIdGenerator.generateTransactionId(7);
     assertTrue(second > first);
-    assertEquals(7, TransactionIdGenerator.extractId(second));
+    long reservedThrough =
+        java.nio.ByteBuffer.wrap(java.nio.file.Files.readAllBytes(checkpoint)).getLong();
+    assertTrue(second < reservedThrough, "IDs are local sequences within the durable reservation");
     java.nio.file.Files.writeString(checkpoint, "corrupt");
     assertThrows(java.io.IOException.class, () -> TransactionIdGenerator.configure(checkpoint, 7));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(ints = {0, 256, Integer.MAX_VALUE})
+  void durableLocalSequencesSupportFullCoordinatorIds(
+      int coordinator, @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory)
+      throws Exception {
+    var checkpoint = directory.resolve("instance-" + coordinator + ".ids");
+    TransactionIdGenerator.configure(checkpoint, coordinator);
+    long sequence = TransactionIdGenerator.generateTransactionId(coordinator);
+    long reservedThrough =
+        java.nio.ByteBuffer.wrap(java.nio.file.Files.readAllBytes(checkpoint)).getLong();
+    assertTrue(sequence >= 0);
+    assertTrue(sequence < reservedThrough, "The local sequence must not pack coordinator bits");
+    TransactionIdGenerator.configure(checkpoint, coordinator);
+    assertTrue(TransactionIdGenerator.generateTransactionId(coordinator) > sequence);
   }
 
   @Test

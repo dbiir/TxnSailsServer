@@ -5,6 +5,11 @@ import xml.dom.minidom as minidom
 from itertools import product
 import random
 
+if __package__:
+    from .datasource_config import append_datasource
+else:
+    from datasource_config import append_datasource
+
 scaleFactor = 4
 warmupTime = 20
 execTime = 60  # ms
@@ -36,12 +41,7 @@ def generate_pg_sb_config(cc_type: str, terminals, weight, hsn=-1, hsp=-1.0, zip
     # 创建根节点
     root = ElementTree.Element('parameters')
     # 添加子节点
-    ElementTree.SubElement(root, 'type').text = "POSTGRES"
-    ElementTree.SubElement(root, 'driver').text = "org.postgresql.Driver"
-    ElementTree.SubElement(root, "url").text = ("jdbc:postgresql://localhost:5432/osprey?sslmode=disable&amp"
-                                                ";ApplicationName=smallbank&amp;reWriteBatchedInserts=true")
-    ElementTree.SubElement(root, "username").text = "postgres"
-    ElementTree.SubElement(root, "password").text = "Ss123!@#"
+    append_datasource(root)
     ElementTree.SubElement(root, "isolation").text = "TRANSACTION_SERIALIZABLE"
     ElementTree.SubElement(root, "batchsize").text = "128"
     ElementTree.SubElement(root, "concurrencyControlType").text = cc_type

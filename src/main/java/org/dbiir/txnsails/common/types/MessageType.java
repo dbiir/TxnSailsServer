@@ -5,6 +5,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 public enum MessageType {
+  CATALOGUE_REQ("CATALOGUE_REQ"),
+  CATALOGUE_RESP("CATALOGUE_RESP"),
   VALIDATION_REQ("VALIDATION_REQ"),
   VALIDATION_RESP("VALIDATION_RESP"),
   PREPARE_REQ("PREPARE_REQ"),

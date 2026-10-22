@@ -42,6 +42,7 @@ import org.antlr.v4.runtime.tree.ParseTreeWalker;
 import org.dbiir.txnsails.analysis.ColumnInfo;
 import org.dbiir.txnsails.analysis.ConditionInfo;
 import org.dbiir.txnsails.common.constants.YCSBConstants;
+import org.dbiir.txnsails.execution.transaction.DistributedSQL;
 import org.dbiir.txnsails.parse.PostgreSQLLexer;
 import org.dbiir.txnsails.parse.PostgreSQLParser;
 import org.dbiir.txnsails.parse.PostgreSQLParserBaseListener;
@@ -64,6 +65,8 @@ public class TemplateSQL implements Cloneable {
   private boolean selectAllAttr;
   private boolean rangeOnPrimaryKey;
   private boolean complexSQL;
+  // Clones share immutable distributed plans instead of reparsing the same registered SQL.
+  private final DistributedSQL.PlanCache distributedPlanCache = new DistributedSQL.PlanCache();
   @Getter private final HashMap<String, List<ConditionInfo>> ranges = new HashMap<>(4);
 
   // in this prototype, we only support sql visits only one table, which covers most OLTP workloads.
@@ -102,6 +105,14 @@ public class TemplateSQL implements Cloneable {
   public void setNeedRewriteUnderSI() {
     this.needRewriteUnderSI = true;
     rewrite();
+  }
+
+  public void applyDistributedRewrite(String sql, List<String> columnNames) {
+    if (needRewriteUnderRC && rewriteSQL == sql) return;
+    needRewriteUnderRC = true;
+    rewriteSQL = sql;
+    columnList =
+        columnNames.stream().map(Column::new).collect(Collectors.toCollection(ArrayList::new));
   }
 
   private void rewrite() {

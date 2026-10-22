@@ -2,7 +2,6 @@ package org.dbiir.txnsails.worker;
 
 import java.sql.*;
 import java.util.*;
-import java.util.concurrent.Future;
 import java.util.logging.Logger;
 import lombok.Getter;
 import lombok.Setter;
@@ -28,9 +27,10 @@ import org.dbiir.txnsails.execution.validation.ValidationMetaTable;
 
 public class OnlineWorker {
   private static final Logger logger = Logger.getLogger(OnlineWorker.class.getName());
-  public static final int MAX_INSTANCE_NUM = 8;
   protected Connection conn = null;
   private WorkloadConfiguration configuration = null;
+  private final org.dbiir.txnsails.analysis.ClosedWorkload closedWorkload;
+  private String activeProgram;
   private final Random random = new Random();
   @Getter private final int id;
   CCType ccType = CCType.SER;
@@ -61,21 +61,22 @@ public class OnlineWorker {
   private int queryIdx = 0;
   private String templateName = "";
   private final boolean distributed;
-  private Connection[] connections = new Connection[MAX_INSTANCE_NUM];
-  protected boolean[] connectionUsed = new boolean[MAX_INSTANCE_NUM];
-  protected List<Future<AsyncResultWrapper>> futureList = new ArrayList<>(MAX_INSTANCE_NUM);
-  protected AsyncResultWrapper[] resultList = new AsyncResultWrapper[MAX_INSTANCE_NUM];
-  private Participant[] participants = new Participant[MAX_INSTANCE_NUM];
+  private final Map<Integer, DBInstance> owners = new HashMap<>();
+  private final Map<Integer, Connection> connections = new HashMap<>();
+  private final Set<Integer> connectionUsed = new HashSet<>();
+  private final Map<Integer, AsyncResultWrapper> resultList = new HashMap<>();
+  private final Map<Integer, Participant> participants = new HashMap<>();
   protected boolean fineSerial = false;
   protected int partitionCount;
   private final Transaction transaction;
 
   public OnlineWorker(WorkloadConfiguration configuration, int id) {
     this.configuration = configuration;
+    this.closedWorkload = configuration.getClosedWorkload();
     this.id = id;
     // init the connection
     try {
-      if (configuration.getInstances().size() <= 1) {
+      if (!configuration.isDistributedMode()) {
         distributed = false;
         this.conn = makeConnection();
         this.conn.setAutoCommit(false);
@@ -89,36 +90,14 @@ public class OnlineWorker {
         }
       } else {
         distributed = true;
-        Set<Integer> ids = new HashSet<>();
         for (DBInstance instance : configuration.getInstances()) {
           int instanceId = instance.getId();
-          if (instanceId < 0 || instanceId >= MAX_INSTANCE_NUM || !ids.add(instanceId)) {
-            throw new SQLException(
-                "Database IDs must be unique and in [0," + MAX_INSTANCE_NUM + ")");
-          }
-          Connection connection =
-              StringUtils.isEmpty(instance.getUsername())
-                  ? DriverManager.getConnection(instance.getUrl())
-                  : DriverManager.getConnection(
-                      instance.getUrl(), instance.getUsername(), instance.getPassword());
-          connections[instanceId] = connection;
-          // Explicit BEGIN leaves COMMIT PREPARED outside an implicit JDBC transaction.
-          connection.setAutoCommit(true);
-          String isolation = instance.getIsolation();
-          if (isolation == null) isolation = configuration.getConcurrencyControlType().name();
-          int jdbcIsolation =
-              switch (isolation.toUpperCase(Locale.ROOT).replace("TRANSACTION_", "")) {
-                case "RC", "RC_TAILOR", "READ_COMMITTED" -> Connection.TRANSACTION_READ_COMMITTED;
-                case "SI", "SI_TAILOR", "REPEATABLE_READ" -> Connection.TRANSACTION_REPEATABLE_READ;
-                case "SER", "SERIALIZABLE", "DYNAMIC" -> Connection.TRANSACTION_SERIALIZABLE;
-                default -> throw new SQLException("Unsupported database isolation " + isolation);
-              };
-          connection.setTransactionIsolation(jdbcIsolation);
-          resultList[instanceId] = new AsyncResultWrapper(connection, instanceId);
+          if (instanceId < 0 || owners.putIfAbsent(instanceId, instance) != null)
+            throw new SQLException("Database IDs must be unique and nonnegative");
         }
       }
     } catch (SQLException ex) {
-      for (Connection connection : connections) {
+      for (Connection connection : connections.values()) {
         if (connection != null)
           try {
             connection.close();
@@ -138,9 +117,6 @@ public class OnlineWorker {
     this.transactionId =
         (int) (((System.nanoTime() << 10) | (Thread.currentThread().threadId() & 0x3ff)) & mask);
     this.transaction = new Transaction(transactionId);
-    for (int i = 0; i < MAX_INSTANCE_NUM; i++) {
-      this.participants[i] = new Participant(i, this.connections[i]);
-    }
     // init sample container
     this.readSet = new ArrayList<>(8);
     this.writeSet = new ArrayList<>(8);
@@ -160,6 +136,37 @@ public class OnlineWorker {
     }
   }
 
+  /** Cache connections for touched logical owners; topology size does not allocate DB sessions. */
+  private Connection connectionForOwner(int ownerId) throws SQLException {
+    Connection existing = connections.get(ownerId);
+    if (existing != null) return existing;
+    DBInstance owner = owners.get(ownerId);
+    if (owner == null) throw new SQLException("Unknown database " + ownerId, "08001");
+    Connection opened =
+        StringUtils.isEmpty(owner.getUsername())
+            ? DriverManager.getConnection(owner.getUrl())
+            : DriverManager.getConnection(owner.getUrl(), owner.getUsername(), owner.getPassword());
+    try {
+      // Explicit BEGIN leaves COMMIT PREPARED outside an implicit JDBC transaction.
+      opened.setAutoCommit(true);
+      int isolation = owner.jdbcIsolation(configuration.getConcurrencyControlType());
+      opened.setTransactionIsolation(isolation);
+      Participant participant = new Participant(ownerId, opened);
+      participant.setNativeIsolation(isolation);
+      connections.put(ownerId, opened);
+      participants.put(ownerId, participant);
+      resultList.put(ownerId, new AsyncResultWrapper(opened, ownerId));
+      return opened;
+    } catch (SQLException | RuntimeException failure) {
+      try {
+        opened.close();
+      } catch (SQLException close) {
+        failure.addSuppressed(close);
+      }
+      throw failure;
+    }
+  }
+
   /**
    * online execution
    *
@@ -168,6 +175,20 @@ public class OnlineWorker {
    *     template args[2:]: the params for
    */
   public String execute(String[] args, int offset) throws SQLException {
+    if (closedWorkload != null) {
+      try {
+        if (!isInTransaction) throw new SQLException("BEGIN is required", "25000");
+        if (args.length < offset || !java.util.Objects.equals(activeProgram, args[offset - 2]))
+          throw new SQLException("Statement does not belong to the active program", "0A000");
+        int slot = Integer.parseInt(args[offset - 1]);
+        if (slot < 0 || slot >= templates.get(activeProgram).totalSQLs())
+          throw new SQLException("Undeclared statement slot", "0A000");
+      } catch (SQLException | RuntimeException ex) {
+        if (isInTransaction) transaction.setRollbackOnly(true);
+        if (ex instanceof SQLException sql) throw sql;
+        throw new SQLException("Invalid closed-workload statement", "0A000", ex);
+      }
+    }
     if (!this.templates.containsKey(args[offset - 2])) {
       MetaWorker.getINSTANCE().cloneTemplatesAfterAnalysis(this.templates);
     }
@@ -286,29 +307,27 @@ public class OnlineWorker {
     if (transaction.isRollbackOnly())
       throw new SQLException("Transaction is rollback-only", "25P02");
     try {
-      org.dbiir.txnsails.execution.transaction.DistributedSQL.validate(templateSQL, schema);
+      var plan = org.dbiir.txnsails.execution.transaction.DistributedSQL.plan(templateSQL, schema);
       ValidationMeta meta = new ValidationMeta();
       meta.setTemplateSQL(templateSQL);
       meta.addRuntimeArgs(List.of(args), offset);
       if (meta.getIdForValidation() < 0)
         throw new SQLException("Unsupported distributed key", "0A000");
       int instanceId = DistributionInfo.getINSTANCE().getInstanceID(meta);
-      if (connections[instanceId] == null) throw new SQLException("Unknown database " + instanceId);
-      if (!connectionUsed[instanceId]) {
-        try (Statement begin = connections[instanceId].createStatement()) {
-          begin.execute("BEGIN");
+      int slot = Integer.parseInt(args[offset - 1]);
+      if (closedWorkload != null) closedWorkload.requireAccess(activeProgram, slot, instanceId);
+      Connection connection = connectionForOwner(instanceId);
+      if (!connectionUsed.contains(instanceId)) {
+        try (Statement begin = connection.createStatement()) {
+          // Native SSI must retain SELECT-only global branches through PREPARE.
+          begin.execute("BEGIN READ WRITE");
         }
-        connectionUsed[instanceId] = true;
-        transaction.addParticipant(participants[instanceId]);
+        connectionUsed.add(instanceId);
+        transaction.addParticipant(participants.get(instanceId));
       }
-      templateSQL.setNeedRewriteUnderRC();
       try (PreparedStatement statement =
           getPreparedStatement(
-              connections[instanceId],
-              new SQLStmt(templateSQL.getSQL()),
-              args,
-              offset,
-              templateSQL)) {
+              connection, new SQLStmt(templateSQL.getSQL()), args, offset, templateSQL)) {
         statement.setQueryTimeout(5);
         try (ResultSet rows = statement.executeQuery()) {
           List<List<String>> result = new ArrayList<>();
@@ -328,19 +347,21 @@ public class OnlineWorker {
           }
           if (result.isEmpty())
             throw new SQLException("Distributed point access found no row", "0A000");
-          Map<String, Long> primaryKey = new TreeMap<>();
-          for (ConditionInfo condition : templateSQL.getWherePlaceholders()) {
-            primaryKey.put(
-                condition.getColumnName().toLowerCase(Locale.ROOT),
-                Long.parseLong(args[offset + condition.getPlaceholderIndex()]));
+          // Actual native branches remain participants even when static analysis omits every read.
+          if (templateSQL.getOp() != 0
+              || closedWorkload == null
+              || !configuration.isOptimizedDistributedValidation()
+              || closedWorkload.retainRead(activeProgram, slot, instanceId)) {
+            participants
+                .get(instanceId)
+                .addValidationItem(
+                    plan.item(
+                        meta.getIdForValidation(),
+                        templateSQL.getOp() == 0 ? LockType.SH : LockType.EX,
+                        version,
+                        args,
+                        offset));
           }
-          participants[instanceId].addValidationItem(
-              new org.dbiir.txnsails.execution.validation.ValidationItem(
-                      templateSQL.getTable(),
-                      meta.getIdForValidation(),
-                      templateSQL.getOp() == 0 ? LockType.SH : LockType.EX,
-                      version)
-                  .withPrimaryKey(primaryKey));
           return wrapResults(result);
         }
       }
@@ -365,7 +386,17 @@ public class OnlineWorker {
       throw ex;
     }
     // A commit decision must never be followed by rollback or early lock release.
-    manager.commit(transaction.getTid(), resultList);
+    try {
+      manager.commit(transaction.getTid(), resultList);
+    } catch (SQLException ex) {
+      if (transaction.getStatus() == TransactionStatus.ROLLBACK) {
+        // Native SSI may reject an actual local transaction at ordinary COMMIT.
+        // Its outcome is known; finalize retained owner state before allowing retry.
+        manager.doAfterCommit(transaction.getTid(), false);
+        resetTransactionMeta();
+      }
+      throw ex;
+    }
     manager.doAfterCommit(transaction.getTid(), true);
     resetTransactionMeta();
   }
@@ -401,7 +432,15 @@ public class OnlineWorker {
   }
 
   public void beginFS() throws SQLException {
+    beginFS(null);
+  }
+
+  public void beginFS(String program) throws SQLException {
     if (isInTransaction) throw new SQLException("Previous transaction has not finished", "25001");
+    if (closedWorkload != null) {
+      closedWorkload.requireProgram(program);
+      TransactionManager.getInstance().ensureCatalogueAgreement();
+    }
     templates.clear();
     MetaWorker.getINSTANCE().cloneTemplatesAfterAnalysis(templates);
     if (distributed) {
@@ -414,6 +453,7 @@ public class OnlineWorker {
       }
     }
     isInTransaction = true;
+    activeProgram = program;
   }
 
   public void rollback() throws SQLException {
@@ -519,12 +559,11 @@ public class OnlineWorker {
 
   private void resetTransactionMeta() {
     clearPreviousTransactionInfo();
-    for (int i = 0; i < MAX_INSTANCE_NUM; i++) {
-      connectionUsed[i] = false;
-      participants[i].reset();
-      if (resultList[i] != null) resultList[i].reset();
-    }
+    connectionUsed.clear();
+    participants.values().forEach(Participant::reset);
+    resultList.values().forEach(AsyncResultWrapper::reset);
     transaction.reset();
+    activeProgram = null;
   }
 
   /*
@@ -809,7 +848,7 @@ public class OnlineWorker {
             "Unresolved distributed transaction " + transaction.getTid() + ": " + ex.getMessage());
       }
     }
-    for (Connection connection : connections) {
+    for (Connection connection : connections.values()) {
       if (connection != null)
         try {
           connection.close();

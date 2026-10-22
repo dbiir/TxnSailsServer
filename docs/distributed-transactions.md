@@ -6,8 +6,8 @@ participant, is validated by the middleware owning that participant. Reads retai
 their externally observed version and updates retain the version returned by the
 database. Reads after an own write do not create an external dependency.
 
-Validation takes shared read locks or exclusive write locks without waiting,
-checks external read versions, and holds all locks until every participant has
+Validation takes class-aware read/write locks without waiting,
+checks protected external read versions, and holds all locks until every participant has
 committed or rolled back. Multiple participants use PostgreSQL two-phase commit.
 Unknown commit/rollback outcomes retain transaction state and locks and return an
 error rather than success. This repair does not implement durable coordinator decision or validation-lock
@@ -16,11 +16,19 @@ to be reconciled; independently restarting an owner while peers continue is not
 supported. Startup refuses prepared transactions in any configured database. All conflicting accesses must use this middleware.
 
 Participant isolation is configured independently as RC, SI (PostgreSQL repeatable
-read), or SER. Global validation uses the same conservative policy for all three.
+read), or SER. Optimized certification is the default; use `-v full` for the
+previous policy that strictly validates every external read. Both modes preserve
+every conflict involving an actual multi-database transaction. See
+[the optimization review](distributed-optimization.md) for the local policies and proof.
 Distributed deployment uses explicit per-database isolation settings; the adaptive
 single-database isolation switch is disabled in this mode. There is no globally consistent snapshot across independently started branches,
 so the single-database SI rule of protecting only consecutive rw dependencies is
 insufficient. Any rw anti-dependency in a global cycle can be vulnerable.
+
+For a fixed complete workload, optional `-w` enables
+[distributed static vulnerable-dependency analysis](distributed-static-analysis.md)
+and collects only selected reads. All owners load the same closed catalogue,
+and transactions begin with `begin#program` in that mode.
 
 For example, T1 reads x=0 at A; T2 writes x=1 at A and y=1 at B and commits;
 T1 then first accesses B and reads y=1. The global cycle is T1 --rw(x)--> T2
@@ -44,45 +52,41 @@ ID retain separate locks and versions. Version checks use a parameterized SELECT
 against the full primary key on the owning database, outside the business
 transaction's snapshot. Versions use 64-bit values.
 
-Transaction IDs contain an instance ID and a counter allocated from durable
-reserved blocks. Preserve the `-r` state directory across restarts. Remote
+Transaction identity pairs the full coordinator ID with a local sequence allocated
+from durable reserved blocks; coordinator IDs are not packed into sequence bits. Preserve the `-r` state directory across restarts. Remote
 validation is idempotent for identical requests and rejects mismatched payloads;
 finalization history is bounded, with old unknown IDs rejected conservatively.
 
-## Running two owners
+## Running owners
 
-1. Load the schema and partition data across two PostgreSQL databases. Enable
-   `max_prepared_transactions` on both (a server restart may be needed).
-2. Edit `config/distributed-example.xml` with JDBC URLs, credentials, RPC hosts,
-   and isolation levels. IDs must be unique and between 0 and 7. The order in each
-   table's location list determines the existing benchmark key modulo placement.
-3. Prepare two workload XML files with `<instanceId>0</instanceId>` and
-   `<instanceId>1</instanceId>`. Set `<benchmark>ycsb</benchmark>` for the example.
-   JDBC credentials for each owner come from the distributed configuration.
-4. Start one middleware server per owner. Give each a separate client port when
-   running on the same host; RPC ports come from the distributed configuration.
+Datasource definitions and all three execution modes are in `config/txnsails.toml`.
+Select `--mode single`, `--mode distributed` or `--mode mock`; mock uses one shared
+PostgreSQL datasource with real validation and 2PC. See the
+[deployment guide](local-distributed-mode.md) for data loading and startup.
+
+For distributed execution, configure named datasources and append
+`[[distributed.nodes]]` entries with unique nonnegative integer IDs. IDs can be
+sparse, including values above 255; there is no fixed node-count cap. Table owner
+list order determines the benchmark key modulo placement. Each middleware process
+has its own client and RPC endpoint and selects its ID with `--instance-id`.
 
 ```sh
-mvn -Dfmt.skip=true package
+java -jar target/txnSailsServer-1.0-SNAPSHOT-fat.jar \
+  -c config/txnsails.toml --mode distributed --instance-id 0
 
 java -jar target/txnSailsServer-1.0-SNAPSHOT-fat.jar \
-  -c config/ycsb-owner0.xml -g config/distributed-example.xml \
-  -s config/ycsb.sql -l 9876 -r .txnsails -d metas/owner0
-
-java -jar target/txnSailsServer-1.0-SNAPSHOT-fat.jar \
-  -c config/ycsb-owner1.xml -g config/distributed-example.xml \
-  -s config/ycsb.sql -l 9877 -r .txnsails -d metas/owner1
+  -c config/txnsails.toml --mode distributed --instance-id 1
 ```
 
-Register templates on each coordinator that will execute them. Each transaction
-uses `begin`, `execute`, then `commit` or `rollback`. A failed execution makes the
-whole transaction rollback-only. SQLSTATE `40001` indicates a validation failure
-that can be retried after rollback; `08007` indicates an unresolved outcome that
-requires reconciliation, and must not be blindly retried as a new transaction.
-For manual recovery, the PostgreSQL prepared GID is `<transaction-id>-<instance-id>`.
-Resolve all branches consistently before restarting the quiescent deployment.
+The supplied closed catalogue uses `begin#program`, then `execute`, then `commit`
+or `rollback`. A failed execution makes the transaction rollback-only. SQLSTATE
+`40001` indicates a retryable validation failure; `08007` indicates an unresolved
+outcome requiring reconciliation. Do not retry an unresolved outcome as a new
+transaction.
 
-Omit `-g` to use the original single-database mode.
+For manual recovery, native prepared GIDs are
+`<coordinator-id>-<local-sequence>-<owner-id>`. Preserve the state directory and
+resolve all branches consistently before a coordinated quiescent restart.
 
 ## Verification
 
@@ -94,10 +98,13 @@ launch separate middleware JVMs.
 
 ```sh
 TXNSAILS_TEST_PG_PORT=5433 mvn -Dfmt.skip=true test
+TXNSAILS_TEST_PG_PORT=5433 TXNSAILS_TEST_A_ISOLATION=SI mvn -Dfmt.skip=true test
 TXNSAILS_TEST_PG_PORT=5433 TXNSAILS_TEST_A_ISOLATION=SER mvn -Dfmt.skip=true test
+TXNSAILS_TEST_PG_PORT=5433 TXNSAILS_TEST_A_ISOLATION=SER \
+  TXNSAILS_TEST_VALIDATION_MODE=full mvn -Dfmt.skip=true test
 ```
 
-The first run tests RC/SI participants; the second tests SER/SI participants.
+These runs test RC/SI, SI/SI, SER/SI, and the full-validation fallback.
 Tests cover two-phase commit, rollback, stale remote reads, fractured snapshots,
 read-modify-write, read-your-writes, composite primary keys, RPC replay, bounded
 history, restart-safe IDs, and injected unknown prepare/commit/rollback outcomes.
@@ -117,7 +124,15 @@ history, restart-safe IDs, and injected unknown prepare/commit/rollback outcomes
   rollback, stale reads, read-modify-write, and fractured distributed snapshots.
 - [x] Obtain an independent code review and resolve material findings.
 
-Verified on PostgreSQL 17.3: 42 tests passed with RC/SI; 42 tests passed with
-SER/SI, with middleware processes launched from the packaged fat JAR.
-`mvn package` passed. Independent code review reported no remaining material
+Verified on PostgreSQL 17.3: the current 110-test suite passed with RC/SI and
+SER/SI configurations, including closed-catalogue pruning and full-validation
+control cases. All 32 PostgreSQL integration tests passed using the packaged fat
+JAR. `mvn package` passed.
+Independent code review reported no remaining material
 correctness findings within the scope above.
+
+## Local TOML setup
+
+For two middleware processes on one machine, including a shared PostgreSQL
+database, see [the TOML deployment guide](local-distributed-mode.md). Deployment
+profiles and the fixed workload catalogue can both be configured without XML.

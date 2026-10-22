@@ -1,0 +1,81 @@
+version = 2
+mode = "single"
+benchmark = "ycsb"
+schema = "ycsb.sql"
+validation = "optimized"
+state_directory = "../.txnsails"
+
+[runtime]
+auxiliary_connections = 16
+batch_size = 128
+max_retries = 3
+terminals = 128
+random_seed = -1
+scale_factor = 1.0
+new_connection_per_txn = false
+reconnect_on_connection_failure = false
+parallel_execution = false
+
+[datasources.primary]
+url = "jdbc:postgresql://127.0.0.1:5432/txnsails_primary"
+username = "postgres"
+password = ""
+driver = "org.postgresql.Driver"
+type = "POSTGRES"
+
+[datasources.secondary]
+url = "jdbc:postgresql://127.0.0.1:5432/txnsails_secondary"
+username = "postgres"
+password = ""
+driver = "org.postgresql.Driver"
+type = "POSTGRES"
+
+[single]
+datasource = "primary"
+client_port = 9876
+concurrency_control = "SERIALIZABLE"
+node_id = 0
+
+[distributed]
+workload = "distributed-workload.toml"
+
+[distributed.tables]
+usertable = [0, 1]
+
+[[distributed.nodes]]
+id = 0
+host = "127.0.0.1"
+client_port = 9876
+rpc_port = 23333
+isolation = "SER"
+datasource = "primary"
+
+[[distributed.nodes]]
+id = 1
+host = "127.0.0.1"
+client_port = 9877
+rpc_port = 23334
+isolation = "SI"
+datasource = "secondary"
+
+# Mock runs the same real PostgreSQL branch protocol on one shared backend.
+[mock]
+datasource = "primary"
+workload = "distributed-workload.toml"
+
+[mock.tables]
+usertable = [0, 1]
+
+[[mock.nodes]]
+id = 0
+host = "127.0.0.1"
+client_port = 9876
+rpc_port = 23333
+isolation = "SER"
+
+[[mock.nodes]]
+id = 1
+host = "127.0.0.1"
+client_port = 9877
+rpc_port = 23334
+isolation = "SI"

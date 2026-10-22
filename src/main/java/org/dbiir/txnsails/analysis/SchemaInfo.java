@@ -30,6 +30,11 @@ public class SchemaInfo {
     //      extractSchemaFromFile(fileName);
   }
 
+  /** A read-only table inventory for canonical startup schema fingerprints. */
+  public List<TableInfo> getTables() {
+    return List.copyOf(tables);
+  }
+
   private String readSQLFromFile(String filePath) {
     StringBuilder sqlBuilder = new StringBuilder();
     try (BufferedReader br = new BufferedReader(new FileReader(filePath))) {

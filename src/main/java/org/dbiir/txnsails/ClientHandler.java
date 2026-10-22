@@ -1,10 +1,5 @@
 package org.dbiir.txnsails;
 
-import org.dbiir.txnsails.execution.WorkloadConfiguration;
-import org.dbiir.txnsails.worker.MetaWorker;
-import org.dbiir.txnsails.worker.OfflineWorker;
-import org.dbiir.txnsails.worker.OnlineWorker;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -13,6 +8,10 @@ import java.net.Socket;
 import java.sql.SQLException;
 import java.text.MessageFormat;
 import java.util.List;
+import org.dbiir.txnsails.execution.WorkloadConfiguration;
+import org.dbiir.txnsails.worker.MetaWorker;
+import org.dbiir.txnsails.worker.OfflineWorker;
+import org.dbiir.txnsails.worker.OnlineWorker;
 
 class ClientHandler implements Runnable {
   private final Socket clientSocket;
@@ -29,21 +28,20 @@ class ClientHandler implements Runnable {
 
   @Override
   public void run() {
-    try (
-            BufferedReader in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-            PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)
-    ) {
+    try (BufferedReader in =
+            new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
+        PrintWriter out = new PrintWriter(clientSocket.getOutputStream(), true)) {
       String message;
       while ((message = in.readLine()) != null) {
         long start = System.currentTimeMillis();
         System.out.println(
-                " id: "
-                        + id
-                        + " Received: "
-                        + message
-                        + " cost: "
-                        + (System.currentTimeMillis() - start)
-                        + "ms");
+            " id: "
+                + id
+                + " Received: "
+                + message
+                + " cost: "
+                + (System.currentTimeMillis() - start)
+                + "ms");
         String[] args = parseArgs(message.trim());
         String functionName = args[0].toLowerCase();
         String response;
@@ -51,26 +49,28 @@ class ClientHandler implements Runnable {
         try {
           switch (functionName) {
             case "begin" -> {
-              worker.beginFS();
+              if (configuration.getClosedWorkload() != null && args.length != 2)
+                throw new SQLException("Closed workload requires begin#program", "0A000");
+              worker.beginFS(args.length == 2 ? args[1] : null);
               response = "OK";
             }
             case "execute" -> {
-              if (args.length < 2) {
+              if (args.length < 2 && configuration.getClosedWorkload() == null) {
                 throw new SQLException("Invalid number of arguments for execute command.");
               }
               response = worker.execute(args, 3);
               response = "OK#" + response;
             }
             case "commit" -> {
-              if (configuration.getInstances().size() > 1) {
+              if (configuration.isDistributedMode()) {
                 worker.commitFS();
               } else {
                 worker.commit();
               }
               response = "OK";
             }
-            case  "rollback" -> {
-              if (configuration.getInstances().size() > 1) {
+            case "rollback" -> {
+              if (configuration.isDistributedMode()) {
                 worker.rollbackFS();
               } else {
                 worker.rollback();
@@ -78,6 +78,8 @@ class ClientHandler implements Runnable {
               response = "OK";
             }
             case "register" -> {
+              if (configuration.getClosedWorkload() != null)
+                throw new SQLException("The distributed workload catalogue is immutable", "0A000");
               if (args.length < 5) {
                 response = "FAILED";
                 break;
@@ -90,6 +92,8 @@ class ClientHandler implements Runnable {
               }
             }
             case "analysis" -> {
+              if (configuration.getClosedWorkload() != null)
+                throw new SQLException("The distributed workload catalogue is immutable", "0A000");
               response = "OK";
               OfflineWorker.getINSTANCE().register_end(args);
             }
@@ -104,8 +108,12 @@ class ClientHandler implements Runnable {
           }
 
         } catch (SQLException ex) {
-          response = MessageFormat.format(
-                  MetaWorker.ERROR_FORMATTER, ex.getMessage().split("\n")[0], ex.getSQLState(), ex.getErrorCode());
+          response =
+              MessageFormat.format(
+                  MetaWorker.ERROR_FORMATTER,
+                  ex.getMessage().split("\n")[0],
+                  ex.getSQLState(),
+                  ex.getErrorCode());
         }
 
         System.out.println("Execution time: " + (System.currentTimeMillis() - start) + "ms");

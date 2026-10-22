@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.dbiir.txnsails.common.*;
 import org.dbiir.txnsails.common.messages.*;
 import org.dbiir.txnsails.execution.WorkloadConfiguration;
+import org.dbiir.txnsails.execution.validation.CertificationContext;
 
 /** Coordinates database 2PC and owner-side validation. Commit uncertainty fails closed. */
 public class TransactionManager {
@@ -18,9 +19,18 @@ public class TransactionManager {
   private int instanceID;
   private TxnSailsRPCServer rpcServer;
   private Thread rpcServerThread;
+  private boolean optimizedValidation;
+  private String catalogueFingerprint;
+  private volatile boolean catalogueAgreed;
 
   public void init(WorkloadConfiguration configuration) {
     instanceID = configuration.getInstanceID();
+    optimizedValidation = configuration.isOptimizedDistributedValidation();
+    catalogueFingerprint =
+        configuration.getClosedWorkload() == null
+            ? null
+            : configuration.getClosedWorkload().fingerprint();
+    catalogueAgreed = false;
     DBInstance local =
         configuration.getInstances().stream()
             .filter(instance -> instance.getId() == instanceID)
@@ -42,6 +52,23 @@ public class TransactionManager {
     clients.values().forEach(TxnSailsRPCClient::close);
     if (rpcServer != null) rpcServer.closeServer();
     if (rpcServerThread != null) rpcServerThread.interrupt();
+  }
+
+  /**
+   * Immutable catalogue epochs require agreement from every owner before any pruned work starts.
+   */
+  public synchronized void ensureCatalogueAgreement() throws SQLException {
+    if (catalogueFingerprint == null || catalogueAgreed) return;
+    for (var peer : clients.entrySet()) {
+      CatalogueResponse response =
+          (CatalogueResponse) peer.getValue().request(new CatalogueRequest());
+      if (response.getInstanceID() != peer.getKey()
+          || !catalogueFingerprint.equals(response.getFingerprint())) {
+        throw new SQLException(
+            "Distributed workload catalogue does not match owner " + peer.getKey(), "55000");
+      }
+    }
+    catalogueAgreed = true;
   }
 
   public void setParticipantsFinish(int ignored) {}
@@ -85,6 +112,7 @@ public class TransactionManager {
   }
 
   public void prepare(long tid) throws SQLException {
+    ensureCatalogueAgreement();
     Transaction transaction = getTransaction(tid);
     if (transaction.getStatus() == TransactionStatus.COMMITTING
         || transaction.getStatus() == TransactionStatus.COMMITTED
@@ -96,9 +124,19 @@ public class TransactionManager {
     }
     if (transaction.isRollbackOnly())
       throw new SQLException("Transaction is rollback-only", "25P02");
-    for (Participant participant : participants(transaction)) {
+    List<Participant> ordered = participants(transaction);
+    boolean global = ordered.size() > 1;
+    boolean writes = ordered.stream().anyMatch(p -> p.getValidationSet().hasWrites());
+    // Freeze every branch's policy before acquiring the first validation lock.
+    for (Participant participant : ordered) {
+      participant.setCertificationContext(
+          optimizedValidation
+              ? new CertificationContext(global, writes, participant.getNativeIsolation(), false)
+              : CertificationContext.FULL);
+    }
+    for (Participant participant : ordered) {
       if (participant.getInstanceID() == instanceID) {
-        participant.validate(tid);
+        participant.validate(identity(tid));
       } else {
         participant.setValidationStatus(ValidationStatus.VALIDATING);
         ValidationResponse response =
@@ -106,7 +144,10 @@ public class TransactionManager {
                 client(participant.getInstanceID())
                     .request(
                         new ValidationRequest(
-                            tid, participant.getValidationSet().getValidationItems()));
+                            identity(tid),
+                            participant.getValidationSet().getValidationItems(),
+                            participant.getCertificationContext(),
+                            catalogueFingerprint));
         if (response.getException() != null) {
           participant.setValidationStatus(ValidationStatus.FAILED);
           throw new SQLException("Remote validation failed", "40001", response.getException());
@@ -115,10 +156,9 @@ public class TransactionManager {
       }
     }
     if (transaction.getParticipants().size() > 1) {
-      for (Participant participant : participants(transaction)) {
+      for (Participant participant : ordered) {
         try {
-          execute(
-              participant, "PREPARE TRANSACTION '" + tid + "-" + participant.getInstanceID() + "'");
+          execute(participant, "PREPARE TRANSACTION '" + branchName(tid, participant) + "'");
           participant.setStatus(TransactionStatus.PREPARED);
         } catch (SQLException ex) {
           String state = ex.getSQLState();
@@ -145,30 +185,41 @@ public class TransactionManager {
     transaction.setStatus(TransactionStatus.PREPARED);
   }
 
-  public void commit(long tid, AsyncResultWrapper[] results) throws SQLException {
+  public void commit(long tid, Map<Integer, AsyncResultWrapper> results) throws SQLException {
     Transaction transaction = getTransaction(tid);
+    List<Participant> ordered = participants(transaction);
     if (!transaction.isPrepared() || transaction.isRollbackOnly()) {
       throw new SQLException("Transaction has not prepared successfully", "25000");
     }
-    for (Participant participant : participants(transaction)) {
+    for (Participant participant : ordered) {
       if (participant.getValidationStatus() != ValidationStatus.VALIDATED) {
         throw new SQLException("Participant is not validated", "25000");
       }
     }
     transaction.setStatus(TransactionStatus.COMMITTING);
     SQLException failure = null;
-    for (Participant participant : participants(transaction)) {
+    for (Participant participant : ordered) {
       try {
         if (participant.getStatus() == TransactionStatus.COMMITTED) continue;
         execute(
             participant,
             participant.getStatus() == TransactionStatus.PREPARED
-                ? "COMMIT PREPARED '" + tid + "-" + participant.getInstanceID() + "'"
+                ? "COMMIT PREPARED '" + branchName(tid, participant) + "'"
                 : "COMMIT");
         participant.setStatus(TransactionStatus.COMMITTED);
       } catch (SQLException ex) {
-        if (results != null && results[participant.getInstanceID()] != null) {
-          results[participant.getInstanceID()].setException(ex);
+        // PostgreSQL has definitively rolled back these ordinary-COMMIT failures.
+        // A native prepared branch still follows the irrevocable global decision.
+        if (ordered.size() == 1
+            && participant.getStatus() != TransactionStatus.PREPARED
+            && ("40001".equals(ex.getSQLState()) || "40P01".equals(ex.getSQLState()))) {
+          participant.setStatus(TransactionStatus.ROLLBACK);
+          transaction.setRollbackOnly(true);
+          transaction.setStatus(TransactionStatus.ROLLBACK);
+          throw ex;
+        }
+        if (results != null && results.get(participant.getInstanceID()) != null) {
+          results.get(participant.getInstanceID()).setException(ex);
         }
         if (failure == null)
           failure = new SQLException("Distributed commit outcome is in doubt: " + tid, "08007", ex);
@@ -179,7 +230,7 @@ public class TransactionManager {
     transaction.setStatus(TransactionStatus.COMMITTED);
   }
 
-  public void rollback(long tid, AsyncResultWrapper[] results) throws SQLException {
+  public void rollback(long tid, Map<Integer, AsyncResultWrapper> results) throws SQLException {
     Transaction transaction = getTransaction(tid);
     if (transaction.getStatus() == TransactionStatus.COMMITTING
         || transaction.getStatus() == TransactionStatus.COMMITTED
@@ -196,7 +247,7 @@ public class TransactionManager {
         execute(
             participant,
             participant.getStatus() == TransactionStatus.PREPARED
-                ? "ROLLBACK PREPARED '" + tid + "-" + participant.getInstanceID() + "'"
+                ? "ROLLBACK PREPARED '" + branchName(tid, participant) + "'"
                 : "ROLLBACK");
         participant.setStatus(TransactionStatus.ROLLBACK);
       } catch (SQLException ex) {
@@ -220,15 +271,13 @@ public class TransactionManager {
       ValidationStatus status = participant.getValidationStatus();
       if (status == ValidationStatus.VALIDATION_STATUS_NUM) continue;
       if (participant.getInstanceID() == instanceID) {
-        participant.doAfterCommit(tid, committed);
+        participant.doAfterCommit(identity(tid), committed);
       } else {
         try {
           FinalResponse response =
               (FinalResponse)
                   client(participant.getInstanceID())
-                      .request(
-                          new FinalRequest(
-                              tid, committed, participant.getValidationSet().getValidationItems()));
+                      .request(new FinalRequest(identity(tid), committed, List.of()));
           if (response.getException() != null) {
             throw new SQLException("Remote finalization failed", response.getException());
           }
@@ -247,6 +296,14 @@ public class TransactionManager {
     try (PreparedStatement statement = participant.getConnection().prepareStatement(sql)) {
       statement.execute();
     }
+  }
+
+  private TransactionIdentity identity(long sequence) {
+    return new TransactionIdentity(instanceID, sequence);
+  }
+
+  private String branchName(long sequence, Participant participant) {
+    return instanceID + "-" + sequence + "-" + participant.getInstanceID();
   }
 
   public void updateTransactionStatus(long tid, int id, ValidationStatus status) {
